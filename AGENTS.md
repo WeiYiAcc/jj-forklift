@@ -39,6 +39,12 @@
 - When code needs to be testable from integration tests, move reusable logic into `src/lib.rs` and expose the smallest reasonable API.
 - After completing changes to this CLI, run `cargo install --path .` so the globally available `jj-stack` binary is updated.
 
+### Testing: never mock `jj` (or `git`) — only `gh`
+- **Always use the real `jj` binary in tests.** Never mock, fake, or stub `jj` anywhere — no PATH-shimmed fake `jj`, no `CommandRunner`-level canned `jj` output. The same goes for `git`: drive a real colocated `jj` repo backed by a real bare `git` remote (see `tests/real_jj.rs` for the harness pattern).
+- **`gh` is the only process that may be faked**, because we cannot create real GitHub PRs in CI. Define the fake `gh` once and share it across test files. (`tests/real_github.rs` exercises live GitHub and is env-gated.)
+- Assert on **observable state** (bookmark targets, tracked remote refs, revision mutability, SQLite cache rows, the fake-`gh` PR store), not on the argv a command was invoked with.
+- Test pure/string logic by calling the function directly via `src/lib.rs` — that spawns no process and is not "mocking jj".
+
 ### Do
 - Summarize what is about to change in 2-3 plain sentences before the diff.
 - After a change, say what moved and what the user should verify.

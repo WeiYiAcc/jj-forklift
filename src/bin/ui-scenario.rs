@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -6,17 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 const CONFIG_PREFIX: &str = "stack";
-const STACK_FIELD_SEPARATOR: char = '\x1f';
-const STACK_RECORD_SEPARATOR: char = '\x1e';
-const ROOT_PARENT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const REMOTE_TRUNK: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const COMMIT_ONE: &str = "1111111111111111111111111111111111111111";
-const COMMIT_TWO: &str = "2222222222222222222222222222222222222222";
 
 fn main() -> Result<()> {
     let scenario = env::args()
@@ -77,6 +70,12 @@ fn run_merge_scenario(scenario: Scenario) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+struct Change {
+    commit_id: String,
+    change_id: String,
+}
+
 struct Fixture {
     root: PathBuf,
     workspace: PathBuf,
@@ -90,88 +89,84 @@ impl Fixture {
         let workspace = root.join("workspace");
         let repo_dir = workspace.join(".jj").join("repo");
         let bin_dir = root.join("bin");
-        fs::create_dir_all(&repo_dir)?;
+        let remote = root.join("remote.git");
+
         fs::create_dir_all(&bin_dir)?;
+        run_ok_in(&root, "jj", &["git", "init", "--colocate", "workspace"])?;
+        run_ok("git", &["init", "--bare", remote.to_str().unwrap()])?;
+        run_ok_in(
+            &workspace,
+            "git",
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        )?;
+        run_ok_in(
+            &workspace,
+            "git",
+            &["config", "user.email", "test@example.com"],
+        )?;
+        run_ok_in(&workspace, "git", &["config", "user.name", "Test User"])?;
+        run_ok_in(
+            &workspace,
+            "jj",
+            &["config", "set", "--repo", "user.email", "test@example.com"],
+        )?;
+        run_ok_in(
+            &workspace,
+            "jj",
+            &["config", "set", "--repo", "user.name", "Test User"],
+        )?;
+
         let fixture = Self {
             root,
             workspace,
             repo_dir,
             bin_dir,
         };
-        fixture.install_fakes()?;
+        fixture.install_fake_gh()?;
+        fixture.write_gh_state(&json!({ "prs": [], "comments": {} }))?;
         Ok(fixture)
     }
 
-    fn install_fakes(&self) -> Result<()> {
-        write_executable(&self.bin_dir.join("jj"), JJ_FAKE)?;
-        write_executable(&self.bin_dir.join("git"), GIT_FAKE)?;
+    fn install_fake_gh(&self) -> Result<()> {
         write_executable(&self.bin_dir.join("gh"), GH_FAKE)
     }
 
     fn seed_two_pr_merge(&self, scenario: Scenario) -> Result<()> {
-        let bottom_branch = "stack/bottom-title-bottomch";
-        let top_branch = "stack/top-title-topchang";
-        self.write_jj_logs(&[stack_log(&[
-            change_record(
-                "bottomchange",
-                COMMIT_ONE,
-                &[ROOT_PARENT],
-                "bottom title",
-                "bottom title\n\nbottom body",
-            ),
-            change_record(
-                "topchange",
-                COMMIT_TWO,
-                &[COMMIT_ONE],
-                "top title",
-                "top title\n\ntop body",
-            ),
-        ])])?;
-        self.write_git_maps(
-            [("main", ROOT_PARENT), ("origin/main", REMOTE_TRUNK)],
-            [
-                (ROOT_PARENT, REMOTE_TRUNK, true),
-                (REMOTE_TRUNK, COMMIT_TWO, true),
+        let main = self.init_main()?;
+        let bottom = self.create_change("bottom.txt", "bottom title", "bottom body", "main")?;
+        let top = self.create_change("top.txt", "top title", "top body", "@")?;
+        let bottom_branch = stack_branch("bottom-title", &bottom.change_id);
+        let top_branch = stack_branch("top-title", &top.change_id);
+
+        self.set_bookmark(&bottom_branch, &bottom.commit_id)?;
+        self.set_bookmark(&top_branch, &top.commit_id)?;
+        self.push_bookmark(&bottom_branch)?;
+        self.push_bookmark(&top_branch)?;
+
+        self.write_gh_state(&json!({
+            "prs": [
+                pr_json(11, "OPEN", &bottom_branch, "main", "bottom title", "bottom body"),
+                pr_json(12, "OPEN", &top_branch, &bottom_branch, "top title", "top body"),
             ],
-        )?;
-        self.write_branch_heads([
-            ("main", ROOT_PARENT),
-            (bottom_branch, COMMIT_ONE),
-            (top_branch, COMMIT_TWO),
-        ])?;
-        self.write_local_bookmarks([
-            ("main", ROOT_PARENT),
-            (bottom_branch, COMMIT_ONE),
-            (top_branch, COMMIT_TWO),
-        ])?;
-        self.write_prs([
-            merge_pr_json(11, "OPEN", bottom_branch, "main", COMMIT_ONE, ROOT_PARENT),
-            merge_pr_json(
-                12,
-                "OPEN",
-                top_branch,
-                bottom_branch,
-                COMMIT_TWO,
-                COMMIT_ONE,
-            ),
-        ])?;
+            "comments": {},
+        }))?;
         self.write_cache(
-            "bottomchange",
+            &bottom.change_id,
             11,
-            bottom_branch,
+            &bottom_branch,
             "main",
-            COMMIT_ONE,
-            ROOT_PARENT,
+            &bottom.commit_id,
+            &main.commit_id,
             "bottom title",
             "bottom body",
         )?;
         self.write_cache(
-            "topchange",
+            &top.change_id,
             12,
-            top_branch,
-            bottom_branch,
-            COMMIT_TWO,
-            COMMIT_ONE,
+            &top_branch,
+            &bottom_branch,
+            &top.commit_id,
+            &bottom.commit_id,
             "top title",
             "top body",
         )?;
@@ -180,17 +175,65 @@ impl Fixture {
             self.root.join("scenario.json"),
             serde_json::to_string(scenario.name())?,
         )?;
-        fs::write(
-            self.root.join("auto-merge-trunk.json"),
-            serde_json::to_string("main")?,
-        )?;
-        if matches!(scenario, Scenario::CleanupBranches) {
-            fs::write(
-                self.root.join("cleanup-stack-bookmarks.json"),
-                serde_json::to_string(&vec![bottom_branch, top_branch])?,
-            )?;
-        }
         Ok(())
+    }
+
+    fn init_main(&self) -> Result<Change> {
+        fs::write(self.workspace.join("file.txt"), "main\n")?;
+        run_ok_in(&self.workspace, "jj", &["describe", "-m", "initial"])?;
+        run_ok_in(
+            &self.workspace,
+            "jj",
+            &["bookmark", "set", "main", "-r", "@"],
+        )?;
+        let main = self.change_at("@")?;
+        self.push_bookmark("main")?;
+        Ok(main)
+    }
+
+    fn create_change(
+        &self,
+        filename: &str,
+        title: &str,
+        body: &str,
+        parent: &str,
+    ) -> Result<Change> {
+        run_ok_in(&self.workspace, "jj", &["new", parent])?;
+        fs::write(self.workspace.join(filename), format!("{title}\n{body}\n"))?;
+        run_ok_in(
+            &self.workspace,
+            "jj",
+            &["describe", "-m", title, "-m", body],
+        )?;
+        self.change_at("@")
+    }
+
+    fn set_bookmark(&self, name: &str, rev: &str) -> Result<()> {
+        run_ok_in(&self.workspace, "jj", &["bookmark", "set", name, "-r", rev])
+    }
+
+    fn push_bookmark(&self, name: &str) -> Result<()> {
+        run_ok_in(
+            &self.workspace,
+            "jj",
+            &["git", "push", "--remote", "origin", "--bookmark", name],
+        )
+    }
+
+    fn change_at(&self, rev: &str) -> Result<Change> {
+        Ok(Change {
+            commit_id: self.rev_output(rev, "commit_id")?,
+            change_id: self.rev_output(rev, "change_id")?,
+        })
+    }
+
+    fn rev_output(&self, rev: &str, template: &str) -> Result<String> {
+        let output = command_output_in(
+            &self.workspace,
+            "jj",
+            &["log", "--no-graph", "-r", rev, "-T", template],
+        )?;
+        Ok(output.trim().to_owned())
     }
 
     fn run_jj_stack<const N: usize>(&self, args: [&str; N]) -> Result<std::process::ExitStatus> {
@@ -200,63 +243,20 @@ impl Fixture {
             .args(args)
             .current_dir(&self.workspace)
             .env("PATH", format!("{}:{old_path}", self.bin_dir.display()))
-            .env("STACK_FAKE_ROOT", &self.root)
-            .env("STACK_FAKE_WORKSPACE", &self.workspace)
+            .env("UI_SCENARIO_ROOT", &self.root)
+            .env("UI_SCENARIO_WORKSPACE", &self.workspace)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         command.status().map_err(Into::into)
     }
 
-    fn write_jj_logs(&self, logs: &[String]) -> Result<()> {
-        for (index, log) in logs.iter().enumerate() {
-            fs::write(self.root.join(format!("jj-log-{}", index + 1)), log)?;
-        }
-        Ok(())
+    fn gh_state_path(&self) -> PathBuf {
+        self.root.join("gh-state.json")
     }
 
-    fn write_git_maps<const R: usize, const A: usize>(
-        &self,
-        rev_parse: [(&str, &str); R],
-        ancestors: [(&str, &str, bool); A],
-    ) -> Result<()> {
-        fs::write(
-            self.root.join("rev-parse.json"),
-            serde_json::to_string(&rev_parse.into_iter().collect::<BTreeMap<_, _>>())?,
-        )?;
-        let ancestors = ancestors
-            .into_iter()
-            .map(|(left, right, success)| (format!("{left}\n{right}"), success))
-            .collect::<BTreeMap<_, _>>();
-        fs::write(
-            self.root.join("ancestors.json"),
-            serde_json::to_string(&ancestors)?,
-        )?;
-        Ok(())
-    }
-
-    fn write_branch_heads<const N: usize>(&self, heads: [(&str, &str); N]) -> Result<()> {
-        fs::write(
-            self.root.join("branch-heads.json"),
-            serde_json::to_string(&heads.into_iter().collect::<BTreeMap<_, _>>())?,
-        )?;
-        Ok(())
-    }
-
-    fn write_local_bookmarks<const N: usize>(&self, heads: [(&str, &str); N]) -> Result<()> {
-        fs::write(
-            self.root.join("local-bookmarks.json"),
-            serde_json::to_string(&heads.into_iter().collect::<BTreeMap<_, _>>())?,
-        )?;
-        Ok(())
-    }
-
-    fn write_prs<const N: usize>(&self, prs: [Value; N]) -> Result<()> {
-        fs::write(
-            self.root.join("prs.json"),
-            serde_json::to_string(&prs.into_iter().collect::<Vec<_>>())?,
-        )?;
-        Ok(())
+    fn write_gh_state(&self, state: &Value) -> Result<()> {
+        fs::write(self.gh_state_path(), serde_json::to_string(state)?).map_err(Into::into)
     }
 
     fn write_cache(
@@ -360,6 +360,41 @@ fn init_cache_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn run_ok(program: &str, args: &[&str]) -> Result<()> {
+    let output = Command::new(program).args(args).output()?;
+    assert_success(&display_command(program, args), &output)
+}
+
+fn run_ok_in(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
+    let output = Command::new(program).args(args).current_dir(dir).output()?;
+    assert_success(&display_command(program, args), &output)
+}
+
+fn command_output_in(dir: &Path, program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program).args(args).current_dir(dir).output()?;
+    assert_success(&display_command(program, args), &output)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn assert_success(label: &str, output: &std::process::Output) -> Result<()> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        bail!(
+            "{label} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+}
+
+fn display_command(program: &str, args: &[&str]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn write_executable(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents)?;
     let mut permissions = fs::metadata(path)?.permissions();
@@ -375,236 +410,33 @@ fn unique_dir(name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn stack_log(records: &[String]) -> String {
-    records.join("")
+fn stack_branch(title_slug: &str, change_id: &str) -> String {
+    format!("stack/{title_slug}-{}", &change_id[..8])
 }
 
-fn change_record(
-    change_id: &str,
-    commit_id: &str,
-    parent_ids: &[&str],
-    title: &str,
-    description: &str,
-) -> String {
-    [
-        serde_json::to_string(change_id).unwrap(),
-        serde_json::to_string(commit_id).unwrap(),
-        serde_json::to_string(parent_ids).unwrap(),
-        serde_json::to_string(title).unwrap(),
-        serde_json::to_string(description).unwrap(),
-        "false".to_owned(),
-        "false".to_owned(),
-    ]
-    .join(&STACK_FIELD_SEPARATOR.to_string())
-        + &STACK_RECORD_SEPARATOR.to_string()
-}
-
-fn merge_pr_json(
-    number: u64,
-    state: &str,
-    head: &str,
-    base: &str,
-    head_sha: &str,
-    base_sha: &str,
-) -> Value {
+fn pr_json(number: u64, state: &str, head: &str, base: &str, title: &str, body: &str) -> Value {
     json!({
         "number": number,
         "state": state,
-        "id": format!("PR_node_{number}"),
         "headRefName": head,
         "baseRefName": base,
-        "headRefOid": head_sha,
-        "baseRefOid": base_sha,
-        "headRepository": {
-            "id": "repo-id",
-            "node_id": "repo-node",
-            "nameWithOwner": "owner/repo",
-        },
-        "baseRepository": {
-            "id": "repo-id",
-            "node_id": "repo-node",
-            "nameWithOwner": "owner/repo",
-        },
-        "author": { "login": "octocat" },
-        "title": "change title",
-        "body": "change body",
-        "createdAt": "2026-06-03T12:34:56Z",
-        "isDraft": false,
-        "reviewDecision": "APPROVED",
-        "mergeable": "MERGEABLE",
-        "mergeStateStatus": "CLEAN",
-        "statusCheckRollup": [{ "context": "ci", "state": "SUCCESS" }],
-        "autoMergeRequest": null,
+        "title": title,
+        "body": body,
     })
 }
-
-const JJ_FAKE: &str = r#"#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
-
-root = Path(os.environ["STACK_FAKE_ROOT"])
-args = sys.argv[1:]
-with (root / "jj-requests.jsonl").open("a") as fh:
-    fh.write(json.dumps({"args": args}) + "\n")
-
-def load(name, default):
-    path = root / name
-    return json.loads(path.read_text()) if path.exists() else default
-
-def save(name, value):
-    (root / name).write_text(json.dumps(value))
-
-if args[:2] == ["config", "get"]:
-    if len(args) == 3 and args[2] == 'revset-aliases."immutable_heads()"':
-        print("builtin_immutable_heads()")
-        sys.exit(0)
-    sys.exit(1)
-if args[:3] == ["config", "set", "--repo"]:
-    sys.exit(0)
-if args == ["root"]:
-    print(os.environ["STACK_FAKE_WORKSPACE"])
-    sys.exit(0)
-if args and args[0] == "log":
-    if "-T" in args and "-r" in args:
-        template = args[args.index("-T") + 1]
-        commit_id_template = template in {"commit_id", 'commit_id ++ "\\n"'}
-    else:
-        commit_id_template = False
-    if commit_id_template:
-        rev = args[args.index("-r") + 1]
-        if rev == "trunk()":
-            refs = load("rev-parse.json", {})
-            heads = load("branch-heads.json", {})
-            print(refs.get("origin/main") or refs.get("main") or heads.get("main"))
-            sys.exit(0)
-        if "@" in rev:
-            trunk, remote = rev.split("@", 1)
-            refs = load("rev-parse.json", {})
-            value = refs.get(remote + "/" + trunk)
-            if value is None:
-                print("missing remote bookmark " + rev, file=sys.stderr)
-                sys.exit(1)
-            print(value)
-            sys.exit(0)
-        heads = load("local-bookmarks.json", {})
-        value = heads.get(rev)
-        if value is None:
-            print("missing local bookmark " + rev, file=sys.stderr)
-            sys.exit(1)
-        print(value)
-        sys.exit(0)
-    path = root / "jj-log-1"
-    if path.exists():
-        sys.stdout.write(path.read_text())
-    sys.exit(0)
-if args[:2] == ["bookmark", "list"] and len(args) > 2 and args[2] == "-T":
-    for branch in load("cleanup-stack-bookmarks.json", []):
-        print(f"{branch}\t")
-    sys.exit(0)
-if args[:2] == ["bookmark", "list"] and "--revision" in args:
-    rev = args[args.index("--revision") + 1]
-    local_heads = load("local-bookmarks.json", {})
-    for branch, commit in sorted(local_heads.items()):
-        if commit == rev:
-            print(f"{branch}\t")
-    sys.exit(0)
-if args[:3] == ["bookmark", "list", "--all-remotes"] and "-T" in args:
-    branch = args[3]
-    heads = load("branch-heads.json", {})
-    if branch in heads:
-        print("origin\ttracked\tok")
-    sys.exit(0)
-if args[:3] == ["bookmark", "list", "jj-stack/frozen/*"] and "-T" in args:
-    sys.exit(0)
-if args[:2] == ["bookmark", "set"] and "-r" in args:
-    branch = args[2]
-    commit = args[args.index("-r") + 1]
-    heads = load("local-bookmarks.json", {})
-    heads[branch] = commit
-    save("local-bookmarks.json", heads)
-    sys.exit(0)
-if args[:2] == ["bookmark", "delete"]:
-    heads = load("local-bookmarks.json", {})
-    heads.pop(args[2], None)
-    save("local-bookmarks.json", heads)
-    sys.exit(0)
-if args[:2] == ["bookmark", "forget"]:
-    sys.exit(0)
-if args[:2] == ["git", "push"] and "--bookmark" in args:
-    branches = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--bookmark"]
-    heads = load("branch-heads.json", {})
-    local_heads = load("local-bookmarks.json", {})
-    for branch in branches:
-        if branch in local_heads:
-            heads[branch] = local_heads[branch]
-    save("branch-heads.json", heads)
-    if load("auto-merge-trunk.json", None) in branches:
-        (root / "trunk-pushed").write_text("true")
-        scenario = load("scenario.json", "")
-        if scenario not in {"verify-merge-slow"}:
-            prs = load("prs.json", [])
-            for pr in prs:
-                if pr["state"].upper() == "OPEN" and pr["baseRefName"] == "main":
-                    pr["state"] = "MERGED"
-            save("prs.json", prs)
-    sys.exit(0)
-if args and args[0] == "new":
-    sys.exit(0)
-
-print("unconfigured jj command: " + " ".join(args), file=sys.stderr)
-sys.exit(1)
-"#;
-
-const GIT_FAKE: &str = r#"#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
-
-root = Path(os.environ["STACK_FAKE_ROOT"])
-args = sys.argv[1:]
-with (root / "git-requests.jsonl").open("a") as fh:
-    fh.write(json.dumps({"args": args}) + "\n")
-
-def load(name, default):
-    path = root / name
-    return json.loads(path.read_text()) if path.exists() else default
-
-if args[:2] == ["config", "--get"]:
-    sys.exit(1)
-if args[:3] == ["show", "-s", "--format=%T"]:
-    print("tree-" + args[3][:12])
-    sys.exit(0)
-if args[:2] == ["merge-base", "--is-ancestor"]:
-    ancestors = load("ancestors.json", {})
-    if ancestors.get(args[2] + "\n" + args[3], True):
-        sys.exit(0)
-    print("not ancestor", file=sys.stderr)
-    sys.exit(1)
-if args and args[0] == "rev-parse":
-    refs = load("rev-parse.json", {})
-    value = refs.get(args[1])
-    if value is None:
-        print("missing rev-parse", file=sys.stderr)
-        sys.exit(1)
-    print(value)
-    sys.exit(0)
-
-print("unconfigured git command: " + " ".join(args), file=sys.stderr)
-sys.exit(1)
-"#;
 
 const GH_FAKE: &str = r#"#!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
-root = Path(os.environ["STACK_FAKE_ROOT"])
+root = Path(os.environ["UI_SCENARIO_ROOT"])
+workspace = Path(os.environ["UI_SCENARIO_WORKSPACE"])
 args = sys.argv[1:]
+
 with (root / "gh-requests.jsonl").open("a") as fh:
     fh.write(json.dumps({"args": args}) + "\n")
 
@@ -615,12 +447,44 @@ def load(name, default):
 def save(name, value):
     (root / name).write_text(json.dumps(value))
 
+def load_state():
+    state = load("gh-state.json", {"prs": [], "comments": {}})
+    state.setdefault("prs", [])
+    state.setdefault("comments", {})
+    return state
+
+def save_state(state):
+    save("gh-state.json", state)
+
 def counter(name):
     path = root / name
     value = int(path.read_text()) if path.exists() else 0
     value += 1
     path.write_text(str(value))
     return value
+
+def git_out(*git_args):
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(workspace), *git_args],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError:
+        return ""
+
+def remote_oid(branch):
+    out = git_out("ls-remote", "origin", "refs/heads/" + branch)
+    return out.split()[0] if out else ""
+
+def is_ancestor(left, right):
+    if not left or not right:
+        return False
+    return subprocess.call(
+        ["git", "-C", str(workspace), "merge-base", "--is-ancestor", left, right],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) == 0
 
 def field_values():
     values = {}
@@ -630,25 +494,56 @@ def field_values():
             values[key] = value
     return values
 
-def pr_response(number, state, head, base, title, body):
-    heads = load("branch-heads.json", {})
+def find_pr(state, number):
+    for pr in state["prs"]:
+        if int(pr["number"]) == int(number):
+            return pr
+    return None
+
+def eligible_merged(pr):
+    return is_ancestor(remote_oid(pr["headRefName"]), remote_oid(pr["baseRefName"]))
+
+def resolve_state(state, pr, allow_slow_transition=False):
+    if pr["state"].upper() != "OPEN":
+        return pr["state"]
+    if not eligible_merged(pr):
+        return pr["state"]
+    scenario = load("scenario.json", "")
+    if scenario == "verify-merge-slow" and not allow_slow_transition:
+        return pr["state"]
+    if scenario == "verify-merge-slow" and counter("verify-state-count") < 4:
+        time.sleep(0.35)
+        return pr["state"]
+    pr["state"] = "MERGED"
+    save_state(state)
+    return pr["state"]
+
+def pr_view(state, pr, allow_slow_transition=False):
+    scenario = load("scenario.json", "")
+    mergeable = pr.get("mergeable", "MERGEABLE")
+    if scenario == "merge-two-prs-settle-slow" and int(pr["number"]) == 12 and mergeable == "UNKNOWN":
+        time.sleep(0.35)
+        if counter("mergeability-12-count") >= 3:
+            pr["mergeable"] = "MERGEABLE"
+            mergeable = "MERGEABLE"
+            save_state(state)
     return {
-        "number": number,
-        "state": state,
-        "id": f"PR_node_{number}",
-        "headRefName": head,
-        "baseRefName": base,
-        "headRefOid": heads.get(head, "headsha"),
-        "baseRefOid": heads.get(base, "basesha"),
+        "number": pr["number"],
+        "state": resolve_state(state, pr, allow_slow_transition),
+        "id": "PR_node_%d" % pr["number"],
+        "headRefName": pr["headRefName"],
+        "baseRefName": pr["baseRefName"],
+        "headRefOid": remote_oid(pr["headRefName"]) or "headsha",
+        "baseRefOid": remote_oid(pr["baseRefName"]) or "basesha",
         "headRepository": {"id": "repo-id", "node_id": "repo-node", "nameWithOwner": "owner/repo"},
         "baseRepository": {"id": "repo-id", "node_id": "repo-node", "nameWithOwner": "owner/repo"},
         "author": {"login": "octocat"},
-        "title": title,
-        "body": body,
+        "title": pr.get("title", ""),
+        "body": pr.get("body", ""),
         "createdAt": "2026-06-03T12:34:56Z",
         "isDraft": False,
         "reviewDecision": "APPROVED",
-        "mergeable": "MERGEABLE",
+        "mergeable": mergeable,
         "mergeStateStatus": "CLEAN",
         "statusCheckRollup": [{"context": "ci", "state": "SUCCESS"}],
         "autoMergeRequest": None,
@@ -657,70 +552,116 @@ def pr_response(number, state, head, base, title, body):
 if args[:2] == ["repo", "view"]:
     print("owner/repo")
     sys.exit(0)
+
 if args[:3] == ["api", "user", "--jq"]:
     print("octocat")
     sys.exit(0)
+
+if args[:2] == ["api", "repos/owner/repo"] and "--jq" in args:
+    print("true")
+    sys.exit(0)
+
 if args[:2] == ["pr", "list"]:
-    state = args[args.index("--state") + 1].upper()
-    prs = [pr for pr in load("prs.json", []) if pr["state"].upper() == state]
-    if "--head" in args:
-        head = args[args.index("--head") + 1]
-        prs = [pr for pr in prs if pr["headRefName"] == head]
-    if "--base" in args:
-        base = args[args.index("--base") + 1]
-        prs = [pr for pr in prs if pr["baseRefName"] == base]
+    state = load_state()
+    wanted = args[args.index("--state") + 1].upper() if "--state" in args else None
+    head = args[args.index("--head") + 1] if "--head" in args else None
+    base = args[args.index("--base") + 1] if "--base" in args else None
+    prs = []
+    for pr in state["prs"]:
+        view = pr_view(state, pr)
+        if wanted and view["state"].upper() != wanted:
+            continue
+        if head and view["headRefName"] != head:
+            continue
+        if base and view["baseRefName"] != base:
+            continue
+        prs.append(view)
     print(json.dumps(prs))
     sys.exit(0)
+
 if args[:2] == ["pr", "view"]:
-    number = int(args[2])
+    state = load_state()
+    pr = find_pr(state, args[2])
+    if pr is None:
+        print("not found", file=sys.stderr)
+        sys.exit(1)
     jq = args[args.index("--jq") + 1] if "--jq" in args else None
-    prs = load("prs.json", [])
-    scenario = load("scenario.json", "")
-    for pr in prs:
-        if int(pr["number"]) != number:
-            continue
-        if jq == ".state":
-            if scenario == "verify-merge-slow" and (root / "trunk-pushed").exists():
-                time.sleep(0.35)
-                if counter("verify-state-count") >= 4:
-                    for item in prs:
-                        if item["baseRefName"] == "main":
-                            item["state"] = "MERGED"
-                    save("prs.json", prs)
-                    pr["state"] = "MERGED"
-            print(pr["state"])
-            sys.exit(0)
-        if scenario == "merge-two-prs-settle-slow" and number == 12 and pr.get("mergeable") == "UNKNOWN":
-            time.sleep(0.35)
-            if counter("mergeability-12-count") >= 3:
-                pr["mergeable"] = "MERGEABLE"
-                save("prs.json", prs)
-        print(json.dumps(pr))
-        sys.exit(0)
-    print("not found", file=sys.stderr)
-    sys.exit(1)
+    view = pr_view(state, pr, allow_slow_transition=(jq == ".state"))
+    if jq == ".state":
+        print(view["state"])
+    else:
+        print(json.dumps(view))
+    sys.exit(0)
+
+if args[:2] == ["pr", "merge"]:
+    state = load_state()
+    pr = find_pr(state, args[2])
+    if pr is not None:
+        pr["state"] = "MERGED"
+        save_state(state)
+    sys.exit(0)
+
 if args[:1] == ["api"] and len(args) >= 2 and args[1].startswith("repos/owner/repo/pulls/") and "-X" not in args:
-    number = int(args[1].rsplit("/", 1)[1])
-    for pr in load("prs.json", []):
-        if int(pr["number"]) == number:
-            print(json.dumps(pr))
-            sys.exit(0)
-    print("not found", file=sys.stderr)
-    sys.exit(1)
+    state = load_state()
+    pr = find_pr(state, args[1].rsplit("/", 1)[1])
+    if pr is None:
+        print("not found", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(pr_view(state, pr)))
+    sys.exit(0)
+
+if args[:2] == ["api", "--paginate"] and "/issues/" in args[2] and args[2].endswith("/comments"):
+    state = load_state()
+    pr_number = args[2].split("/issues/")[1].split("/")[0]
+    for comment in state["comments"].get(pr_number, []):
+        print(json.dumps(comment))
+    sys.exit(0)
+
 if args[:3] == ["api", "-X", "PATCH"] and args[3].startswith("repos/owner/repo/pulls/"):
-    number = int(args[3].rsplit("/", 1)[1])
+    state = load_state()
+    pr = find_pr(state, args[3].rsplit("/", 1)[1])
+    if pr is None:
+        print("not found", file=sys.stderr)
+        sys.exit(1)
     values = field_values()
-    prs = load("prs.json", [])
+    pr["baseRefName"] = values.get("base", pr["baseRefName"])
+    pr["title"] = values.get("title", pr.get("title", ""))
+    pr["body"] = values.get("body", pr.get("body", ""))
     scenario = load("scenario.json", "")
-    for pr in prs:
-        if int(pr["number"]) == number:
-            base = values.get("base", pr["baseRefName"])
-            pr.update(pr_response(number, pr["state"], pr["headRefName"], base, pr.get("title", ""), pr.get("body", "")))
-            if scenario == "merge-two-prs-settle-slow" and number == 12:
-                pr["mergeable"] = "UNKNOWN"
-            print(json.dumps(pr))
-            save("prs.json", prs)
-            sys.exit(0)
+    if scenario == "merge-two-prs-settle-slow" and int(pr["number"]) == 12:
+        pr["mergeable"] = "UNKNOWN"
+    save_state(state)
+    print(json.dumps(pr_view(state, pr)))
+    sys.exit(0)
+
+if args[:3] == ["api", "-X", "POST"] and "/issues/" in args[3] and args[3].endswith("/comments"):
+    state = load_state()
+    pr_number = args[3].split("/issues/")[1].split("/")[0]
+    values = field_values()
+    existing = sum(len(items) for items in state["comments"].values())
+    next_id = 100 + existing + 1
+    state["comments"].setdefault(pr_number, []).append({
+        "id": next_id,
+        "body": values.get("body", ""),
+        "userLogin": "octocat",
+        "updatedAt": "2026-06-03T18:00:00Z",
+    })
+    save_state(state)
+    print(json.dumps({"id": next_id}))
+    sys.exit(0)
+
+if args[:3] == ["api", "-X", "PATCH"] and "/issues/comments/" in args[3]:
+    state = load_state()
+    comment_id = int(args[3].rsplit("/", 1)[1])
+    values = field_values()
+    for items in state["comments"].values():
+        for comment in items:
+            if int(comment["id"]) == comment_id:
+                comment["body"] = values.get("body", "")
+                comment["updatedAt"] = "2026-06-03T18:30:00Z"
+                save_state(state)
+                print(json.dumps({"id": comment_id}))
+                sys.exit(0)
     print("not found", file=sys.stderr)
     sys.exit(1)
 
