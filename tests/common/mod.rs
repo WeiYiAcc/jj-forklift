@@ -89,20 +89,20 @@ impl TestRepo {
         format!("{}:{old_path}", self.bin.display())
     }
 
-    /// Run the real `jj-stack` binary in the work tree, with the fake `gh` on
+    /// Run the real `forklift` binary in the work tree, with the fake `gh` on
     /// PATH and the gh state directory pointed at the test root.
     pub fn run(&self, args: &[&str]) -> anyhow::Result<Output> {
         self.run_in(&self.work, args)
     }
 
-    /// Run the real `jj-stack` binary in an arbitrary directory (e.g. a second
+    /// Run the real `forklift` binary in an arbitrary directory (e.g. a second
     /// jj workspace), still using the fake `gh` and shared gh state.
     pub fn run_in(&self, dir: &Path, args: &[&str]) -> anyhow::Result<Output> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_jj-stack"))
+        Ok(Command::new(env!("CARGO_BIN_EXE_forklift"))
             .args(args)
             .current_dir(dir)
             .env("PATH", self.path_with_fake_gh())
-            .env("JJ_STACK_GH_DIR", &self.root)
+            .env("FORKLIFT_GH_DIR", &self.root)
             .output()?)
     }
 
@@ -342,7 +342,7 @@ impl TestRepo {
         Ok(lines.next() == Some("true") && lines.all(|line| line.is_empty()))
     }
 
-    /// Branch name `jj-stack` derives for a change: `stack/<slug>-<change8>`.
+    /// Branch name `forklift` derives for a change: `stack/<slug>-<change8>`.
     pub fn stack_branch(&self, title_slug: &str, change_id: &str) -> String {
         format!("stack/{title_slug}-{}", &change_id[..8])
     }
@@ -612,7 +612,7 @@ pub fn cache_entry_at(path: &Path, change_id: &str) -> anyhow::Result<Value> {
     Ok(entry)
 }
 
-/// Render the stack-comment body that `jj-stack get`/`sync` parse. `rows` are
+/// Render the stack-comment body that `forklift get`/`sync` parse. `rows` are
 /// `(change_id, pr_number, head_branch, base_branch, title)` ordered bottom→top.
 pub fn stack_comment_body(
     rows: &[(&str, u64, &str, &str, &str)],
@@ -640,12 +640,12 @@ pub fn stack_comment_body(
         .find(|(change_id, _, _, _, _)| *change_id == current_change_id)
     {
         body.push_str(&format!(
-            "Check out this stack: `jj-stack get https://github.com/owner/repo/pull/{number}`\n"
+            "Check out this stack: `forklift get https://github.com/owner/repo/pull/{number}`\n"
         ));
     }
-    body.push_str("Pull/update this stack: `jj-stack sync`\n");
-    body.push_str("Publish local edits: `jj-stack submit`\n");
-    body.push_str("Merge when ready: `jj-stack merge`\n");
+    body.push_str("Pull/update this stack: `forklift sync`\n");
+    body.push_str("Publish local edits: `forklift submit`\n");
+    body.push_str("Merge when ready: `forklift merge`\n");
     body
 }
 
@@ -694,7 +694,7 @@ fn display_command(program: &str, args: &[&str]) -> String {
 pub fn unique_dir(name: &str) -> anyhow::Result<PathBuf> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = env::temp_dir().join(format!(
-        "jj-stack-real-{name}-{}-{nanos}",
+        "forklift-real-{name}-{}-{nanos}",
         std::process::id()
     ));
     fs::create_dir_all(&path)?;
@@ -709,7 +709,7 @@ fn write_executable(path: &Path, contents: &str) -> anyhow::Result<()> {
 }
 
 /// The single faked process. It stores PR/comment metadata in `gh-state.json`
-/// under `$JJ_STACK_GH_DIR`, logs every invocation to `gh-requests.jsonl`, and
+/// under `$FORKLIFT_GH_DIR`, logs every invocation to `gh-requests.jsonl`, and
 /// derives head/base oids and merged-state from the REAL remote (`git ls-remote`
 /// + `git merge-base --is-ancestor`), so it tracks actual repository state.
 const FAKE_GH: &str = r#"#!/usr/bin/env python3
@@ -719,7 +719,7 @@ import subprocess
 import sys
 
 args = sys.argv[1:]
-gh_dir = os.environ.get("JJ_STACK_GH_DIR", ".")
+gh_dir = os.environ.get("FORKLIFT_GH_DIR", ".")
 state_path = os.path.join(gh_dir, "gh-state.json")
 
 with open(os.path.join(gh_dir, "gh-requests.jsonl"), "a") as fh:

@@ -37,7 +37,7 @@
 - Keep tests in the `tests/` directory.
 - Do not add inline Rust test modules such as `#[cfg(test)] mod tests` in `src/` files.
 - When code needs to be testable from integration tests, move reusable logic into `src/lib.rs` and expose the smallest reasonable API.
-- After completing changes to this CLI, run `cargo install --path .` so the globally available `jj-stack` binary is updated.
+- After completing changes to this CLI, run `cargo install --path .` so the globally available `forklift` binary is updated.
 
 ### Testing: never mock `jj` (or `git`) — only `gh`
 - **Always use the real `jj` binary in tests.** Never mock, fake, or stub `jj` anywhere — no PATH-shimmed fake `jj`, no `CommandRunner`-level canned `jj` output. The same goes for `git`: drive a real colocated `jj` repo backed by a real bare `git` remote (see `tests/real_jj.rs` for the harness pattern).

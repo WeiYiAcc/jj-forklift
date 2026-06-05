@@ -243,8 +243,8 @@ impl TestRepo {
         Ok(lines.next() == Some("true") && lines.all(|line| line.is_empty()))
     }
 
-    fn run_jj_stack(&self, args: &[&str]) -> anyhow::Result<Output> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_jj-stack"))
+    fn run_forklift(&self, args: &[&str]) -> anyhow::Result<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_forklift"))
             .args(args)
             .current_dir(&self.work)
             .env("PATH", self.path_with_fake_gh())
@@ -321,8 +321,8 @@ fn real_jj_submit_keeps_own_pushed_branch_mutable_after_fetch() -> anyhow::Resul
     repo.init_main()?;
     repo.create_change("change", "change title", "")?;
 
-    let output = repo.run_jj_stack(&["submit", "--revset", "main..@ & ~empty()"])?;
-    assert_success("jj-stack submit", &output);
+    let output = repo.run_forklift(&["submit", "--revset", "main..@ & ~empty()"])?;
+    assert_success("forklift submit", &output);
 
     repo.fetch_origin()?;
     assert!(
@@ -342,8 +342,8 @@ fn real_jj_submit_updates_existing_pr_after_edit() -> anyhow::Result<()> {
     repo.init_main()?;
     let original = repo.create_change("change", "change title", "")?;
 
-    let output = repo.run_jj_stack(&["submit", "--revset", "main..@ & ~empty()"])?;
-    assert_success("initial jj-stack submit", &output);
+    let output = repo.run_forklift(&["submit", "--revset", "main..@ & ~empty()"])?;
+    assert_success("initial forklift submit", &output);
 
     fs::write(
         repo.work.join("change.txt"),
@@ -353,8 +353,8 @@ fn real_jj_submit_updates_existing_pr_after_edit() -> anyhow::Result<()> {
     let edited = repo.change_at("@")?;
     assert_ne!(edited.commit_id, original.commit_id);
 
-    let output = repo.run_jj_stack(&["submit", "--revset", "main..@ & ~empty()"])?;
-    assert_success("updated jj-stack submit", &output);
+    let output = repo.run_forklift(&["submit", "--revset", "main..@ & ~empty()"])?;
+    assert_success("updated forklift submit", &output);
 
     let local_after_submit = repo.change_at("@")?;
     repo.fetch_origin()?;
@@ -375,7 +375,7 @@ fn real_jj_frozen_pr_bookmark_makes_imported_revision_immutable() -> anyhow::Res
 
     repo.init_main()?;
     let imported = repo.create_change("imported", "imported title", "")?;
-    repo.set_bookmark("jj-stack/frozen/pr-11", &imported.commit_id)?;
+    repo.set_bookmark("forklift/frozen/pr-11", &imported.commit_id)?;
     run_ok_in(
         &repo.work,
         "jj",
@@ -383,8 +383,8 @@ fn real_jj_frozen_pr_bookmark_makes_imported_revision_immutable() -> anyhow::Res
             "config",
             "set",
             "--repo",
-            "revset-aliases.\"jj_stack_frozen_heads()\"",
-            "bookmarks(glob:'jj-stack/frozen/*')",
+            "revset-aliases.\"forklift_frozen_heads()\"",
+            "bookmarks(glob:'forklift/frozen/*')",
         ],
     )?;
     run_ok_in(
@@ -395,19 +395,19 @@ fn real_jj_frozen_pr_bookmark_makes_imported_revision_immutable() -> anyhow::Res
             "set",
             "--repo",
             "revset-aliases.\"immutable_heads()\"",
-            "builtin_immutable_heads() | jj_stack_frozen_heads()",
+            "builtin_immutable_heads() | forklift_frozen_heads()",
         ],
     )?;
 
     assert!(
-        !repo.is_mutable("jj-stack/frozen/pr-11")?,
+        !repo.is_mutable("forklift/frozen/pr-11")?,
         "frozen imported PR revision should be immutable"
     );
     let output = Command::new("jj")
         .args([
             "describe",
             "-r",
-            "jj-stack/frozen/pr-11",
+            "forklift/frozen/pr-11",
             "-m",
             "edited imported title",
         ])
@@ -465,7 +465,7 @@ fn display_command(program: &str, args: &[&str]) -> String {
 fn unique_dir(name: &str) -> anyhow::Result<PathBuf> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = env::temp_dir().join(format!(
-        "jj-stack-real-{name}-{}-{nanos}",
+        "forklift-real-{name}-{}-{nanos}",
         std::process::id()
     ));
     fs::create_dir_all(&path)?;

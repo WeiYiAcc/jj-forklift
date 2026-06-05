@@ -34,8 +34,8 @@ struct GithubPr {
 
 impl RealGithubRepo {
     fn create() -> anyhow::Result<Self> {
-        let owner = required_env("JJ_STACK_E2E_OWNER")?;
-        let prefix = required_env("JJ_STACK_E2E_REPO_PREFIX")?;
+        let owner = required_env("FORKLIFT_E2E_OWNER")?;
+        let prefix = required_env("FORKLIFT_E2E_REPO_PREFIX")?;
         let root = unique_dir("real-github")?;
         let work = root.join("work");
         let suffix = unique_suffix()?;
@@ -52,7 +52,7 @@ impl RealGithubRepo {
                 "--disable-issues",
                 "--disable-wiki",
                 "--description",
-                "Disposable jj-stack E2E repository",
+                "Disposable forklift E2E repository",
             ],
         )
         .with_context(|| {
@@ -63,7 +63,7 @@ impl RealGithubRepo {
 
         run_ok_in(&root, "jj", &["git", "init", "--colocate", "work"])?;
         run_ok_in(&work, "git", &["config", "user.email", "test@example.com"])?;
-        run_ok_in(&work, "git", &["config", "user.name", "jj-stack E2E"])?;
+        run_ok_in(&work, "git", &["config", "user.name", "forklift E2E"])?;
         run_ok_in(
             &work,
             "jj",
@@ -72,7 +72,7 @@ impl RealGithubRepo {
         run_ok_in(
             &work,
             "jj",
-            &["config", "set", "--repo", "user.name", "jj-stack E2E"],
+            &["config", "set", "--repo", "user.name", "forklift E2E"],
         )?;
         run_ok_in(
             &work,
@@ -94,13 +94,13 @@ impl RealGithubRepo {
             root,
             work,
             full_name,
-            keep: env_bool("JJ_STACK_E2E_KEEP_REPO"),
+            keep: env_bool("FORKLIFT_E2E_KEEP_REPO"),
             deleted: false,
         })
     }
 
     fn init_main(&self) -> anyhow::Result<()> {
-        fs::write(self.work.join("README.md"), "# jj-stack e2e\n")?;
+        fs::write(self.work.join("README.md"), "# forklift e2e\n")?;
         run_ok_in(&self.work, "jj", &["describe", "-m", "initial"])?;
         run_ok_in(&self.work, "jj", &["bookmark", "set", "main", "-r", "@"])?;
         run_ok_in(
@@ -154,8 +154,8 @@ impl RealGithubRepo {
         Ok(lines.next() == Some("true") && lines.all(|line| line.is_empty()))
     }
 
-    fn run_jj_stack(&self, args: &[&str]) -> anyhow::Result<Output> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_jj-stack"))
+    fn run_forklift(&self, args: &[&str]) -> anyhow::Result<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_forklift"))
             .args(args)
             .current_dir(&self.work)
             .output()?)
@@ -229,8 +229,8 @@ impl Drop for RealGithubRepo {
 
 #[test]
 fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
-    if !env_bool("JJ_STACK_REAL_GITHUB_E2E") {
-        eprintln!("skipped real GitHub E2E; set JJ_STACK_REAL_GITHUB_E2E=1 to run it");
+    if !env_bool("FORKLIFT_REAL_GITHUB_E2E") {
+        eprintln!("skipped real GitHub E2E; set FORKLIFT_REAL_GITHUB_E2E=1 to run it");
         return Ok(());
     }
 
@@ -239,8 +239,8 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
     let bottom = repo.create_change("bottom", "bottom title")?;
     let top = repo.create_change("top", "top title")?;
 
-    let output = repo.run_jj_stack(&["submit", "--revset", STACK_REVSET])?;
-    assert_success("initial jj-stack submit", &output);
+    let output = repo.run_forklift(&["submit", "--revset", STACK_REVSET])?;
+    assert_success("initial forklift submit", &output);
 
     let initial = repo.wait_for_open_prs(2)?;
     let bottom_pr = pr_with_title(&initial, "bottom title")?;
@@ -250,8 +250,8 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
 
     repo.edit_change(&bottom, "bottom", "bottom title edited")?;
     repo.edit_top(&top)?;
-    let output = repo.run_jj_stack(&["submit", "--revset", STACK_REVSET])?;
-    assert_success("updated jj-stack submit", &output);
+    let output = repo.run_forklift(&["submit", "--revset", STACK_REVSET])?;
+    assert_success("updated forklift submit", &output);
 
     let updated = repo.wait_for_open_prs(2)?;
     let edited_bottom = pr_with_title(&updated, "bottom title edited")?;
@@ -262,7 +262,7 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
     assert_eq!(updated_top.head_ref_name, top_pr.head_ref_name);
     assert_eq!(updated_top.base_ref_name, edited_bottom.head_ref_name);
 
-    let merge = repo.run_jj_stack(&["merge", "--revset", STACK_REVSET, "--verbose"])?;
+    let merge = repo.run_forklift(&["merge", "--revset", STACK_REVSET, "--verbose"])?;
     if merge.status.success() {
         let remaining = repo.wait_for_open_prs(0)?;
         assert!(
@@ -288,7 +288,7 @@ fn pr_with_title<'a>(prs: &'a [GithubPr], title: &str) -> anyhow::Result<&'a Git
 }
 
 fn required_env(name: &str) -> anyhow::Result<String> {
-    env::var(name).with_context(|| format!("{name} is required when JJ_STACK_REAL_GITHUB_E2E=1"))
+    env::var(name).with_context(|| format!("{name} is required when FORKLIFT_REAL_GITHUB_E2E=1"))
 }
 
 fn env_bool(name: &str) -> bool {
@@ -302,7 +302,7 @@ fn env_bool(name: &str) -> bool {
 }
 
 fn unique_dir(name: &str) -> anyhow::Result<PathBuf> {
-    let path = env::temp_dir().join(format!("jj-stack-{name}-{}", unique_suffix()?));
+    let path = env::temp_dir().join(format!("forklift-{name}-{}", unique_suffix()?));
     fs::create_dir_all(&path)?;
     Ok(path)
 }

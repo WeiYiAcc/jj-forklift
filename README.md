@@ -1,9 +1,22 @@
-# Jujutsu Stack
+<div align="center">
+  <a href="https://github.com/rivet-dev/jj-forklift">
+    <img src="./.github/media/logo.png" alt="Forklift for Jujutsu" height="200">
+  </a>
+  <br/>
+  <h3>A Jujutsu-native stacked PR workflow.</h3>
+  <p>Fast local stack submit, sync, merge, and handoff for GitHub.</p>
+  <p>
+    <a href="#install">Install</a> •
+    <a href="#quickstart">Quickstart</a> •
+    <a href="#fundamentals">Fundamentals</a> •
+    <a href="#related-tools">Related tools</a>
+  </p>
+</div>
 
-Jujutsu Stack is a small, low-intrusive Rust CLI for a Jujutsu-native stacked PR
-workflow, inspired by [Graphite](https://graphite.dev). It assumes your jj
-changes form a single bottom-to-top stack, where each change becomes one pull
-request.
+Forklift for Jujutsu is a small, low-intrusive Rust CLI for a Jujutsu-native
+stacked PR workflow, inspired by [Graphite](https://graphite.dev). It assumes
+your jj changes form a single bottom-to-top stack, where each change becomes
+one pull request.
 
 - **Fast:** get out of the developer's way with the bare minimum of waiting. Merges land directly, with no merge queues by design.
 - **Jujutsu-friendly workflow:** focus on editing existing revisions, no extra bloat.
@@ -21,7 +34,7 @@ request.
 Install from Git:
 
 ```text
-cargo install --git https://github.com/rivet-dev/jj-stack.git
+cargo install --git https://github.com/rivet-dev/jj-forklift.git
 ```
 
 ## Quickstart
@@ -31,30 +44,30 @@ The core loop:
 1. **`jj new`** to start a new change on top of your stack.
 2. **Make your edits**: jj tracks the working copy automatically.
 3. **`jj describe`** to set the change's message.
-4. **`jj-stack submit`** to push your stack as pull requests.
-5. **`jj-stack merge`** to land your stack.
+4. **`forklift submit`** to push your stack as pull requests.
+5. **`forklift merge`** to land your stack.
 
 Two other commonly used commands:
 
-- **`jj-stack get <target>`** to fetch an existing stack to work on.
-- **`jj-stack sync`** to pull in the latest changes and rebase onto main as work
+- **`forklift get <target>`** to fetch an existing stack to work on.
+- **`forklift sync`** to pull in the latest changes and rebase onto main as work
   lands around you.
 
 ## Coming from Graphite
 
 If you already know the Graphite CLI (`gt`), here is how its commands map to
-jj and Jujutsu Stack:
+jj and Forklift for Jujutsu:
 
-| Graphite (`gt`)          | jj / Jujutsu Stack |
+| Graphite (`gt`)          | jj / Forklift      |
 | ------------------------ | ------------------ |
 | `gt create`              | `jj new`           |
 | `gt checkout`            | `jj edit`          |
 | `gt move` / `gt restack` | `jj rebase`        |
 | `gt modify -m`           | `jj describe`      |
-| `gt get`                 | `jj-stack get`     |
-| `gt sync`                | `jj-stack sync`    |
-| `gt submit`              | `jj-stack submit`  |
-| `gt merge`               | `jj-stack merge`   |
+| `gt get`                 | `forklift get`     |
+| `gt sync`                | `forklift sync`    |
+| `gt submit`              | `forklift submit`  |
+| `gt merge`               | `forklift merge`   |
 
 **What you gain:**
 
@@ -74,7 +87,8 @@ jj and Jujutsu Stack:
 
 ### Jujutsu fundamentals
 
-You build and edit stacks with plain jj. Jujutsu Stack never replaces these.
+You build and edit stacks with plain jj. Forklift for Jujutsu never replaces
+these.
 
 **`jj new <rev>`**
 Start a new change on top of `<rev>`.
@@ -88,23 +102,23 @@ Restructure or move changes.
 **`jj describe <rev>`**
 Set a change's message.
 
-### Jujutsu Stack
+### Forklift Commands
 
-**`jj-stack get <target>`**
+**`forklift get <target>`**
 Get or fetch an existing stack locally. The target can be a PR number (`123`), a
 PR URL, an exact PR head branch, or a jj change-id prefix embedded in a stack
 branch.
 
-**`jj-stack sync`**
+**`forklift sync`**
 Fetch the latest changes and rebase onto main.
 
-**`jj-stack submit`**
+**`forklift submit`**
 Push your changes as pull requests.
 
-**`jj-stack merge`**
+**`forklift merge`**
 Merge your changes, starting from the current rev.
 
-**`jj-stack pr`**
+**`forklift pr`**
 Open the current PR in your browser.
 
 ### Freezing
@@ -113,21 +127,21 @@ Freezing prevents you from clobbering other users' changes. You cannot edit
 revisions owned by other users, and imported or collaborator-owned changes are
 frozen automatically.
 
-**`jj-stack freeze`**
+**`forklift freeze`**
 Manually freeze a revision.
 
-**`jj-stack unfreeze`**
+**`forklift unfreeze`**
 Manually take ownership of a frozen revision you can push to.
 
 ## Related tools
 
-Jujutsu Stack targets shared stacks: it merges a whole stack from the CLI by
-fast-forwarding trunk and freezes revisions you don't own, with no merge queue.
-How the jj-native tools compare:
+Forklift for Jujutsu targets shared stacks: it merges a whole stack from the CLI
+by fast-forwarding trunk and freezes revisions you don't own, with no merge
+queue. How the jj-native tools compare:
 
 | Tool | Merge | Speed | Multi-PR | Collaboration\* | Auth |
 | ---- | ----- | ----- | -------- | --------------- | ---- |
-| **Jujutsu Stack** | **CLI, FF trunk** | **fast; no queue or CI gate** | **whole stack, one command** | **ownership freeze + handoff** | **`gh`, no token** |
+| **Forklift for Jujutsu** | **CLI, FF trunk** | **fast; no queue or CI gate** | **whole stack, one command** | **ownership freeze + handoff** | **`gh`, no token** |
 | [jj-spr](https://github.com/jennings/jj-spr) | CLI, squash via API | fast; local squash | one at a time, manual rebase | none | token, `repo` scope |
 | [jjpr](https://github.com/michaeldhopkins/jjpr) | CLI, forge API | medium; waits on CI | bottom-up | targets a coworker's branch | `gh`/`glab` or token |
 | [jj-ryu](https://github.com/dmmulroy/jj-ryu) | GitHub web UI | fast submit, manual merge | merge each PR yourself | none | `gh`/`glab` or token |

@@ -1,4 +1,4 @@
-// End-to-end tests driving the real `jj-stack` binary against a REAL colocated
+// End-to-end tests driving the real `forklift` binary against a REAL colocated
 // `jj` repo and a REAL bare `git` remote. Per AGENTS.md, `jj` and `git` are
 // never mocked; the only faked process is `gh` (see tests/common/mod.rs).
 //
@@ -394,16 +394,16 @@ fn get_imports_single_pr_without_stack_comment() -> anyhow::Result<()> {
     assert_success("get 11", &output);
 
     assert_eq!(
-        repo.bookmark_target("jj-stack/frozen/pr-11")?,
+        repo.bookmark_target("forklift/frozen/pr-11")?,
         imported.commit_id,
         "get should freeze the PR head"
     );
     assert!(
-        !repo.bookmark_exists("jj-stack/frozen/pr-12")?,
+        !repo.bookmark_exists("forklift/frozen/pr-12")?,
         "single-PR import should not infer descendants"
     );
     assert!(
-        stdout_of(&output).contains("next: `jj new jj-stack/frozen/pr-11`"),
+        stdout_of(&output).contains("next: `jj new forklift/frozen/pr-11`"),
         "stdout:\n{}",
         stdout_of(&output)
     );
@@ -453,15 +453,15 @@ fn get_fetches_stack_from_comment_and_writes_cache() -> anyhow::Result<()> {
     assert_success("get 12", &output);
 
     assert_eq!(
-        repo.bookmark_target("jj-stack/frozen/pr-11")?,
+        repo.bookmark_target("forklift/frozen/pr-11")?,
         stack[0].commit_id
     );
     assert_eq!(
-        repo.bookmark_target("jj-stack/frozen/pr-12")?,
+        repo.bookmark_target("forklift/frozen/pr-12")?,
         stack[1].commit_id
     );
     assert!(
-        stdout_of(&output).contains("next: `jj new jj-stack/frozen/pr-12`"),
+        stdout_of(&output).contains("next: `jj new forklift/frozen/pr-12`"),
         "stdout:\n{}",
         stdout_of(&output)
     );
@@ -480,7 +480,7 @@ fn get_fetches_stack_from_comment_and_writes_cache() -> anyhow::Result<()> {
 // which ran a full `submit` from a jj *secondary* workspace and asserted the
 // cache landed in the backing repo's `.jj/repo/stack`. That only worked because
 // `git` was faked: a real jj secondary workspace is NOT colocated, so the real
-// `git` commands `jj-stack` relies on (e.g. resolving a commit's tree) cannot
+// `git` commands `forklift` relies on (e.g. resolving a commit's tree) cannot
 // run there. The behavior it actually exercised — `resolve_jj_repo_dir`
 // following the `.jj/repo` pointer file to the backing repo — is covered as a
 // pure unit test (see the lib-extraction phase). Mocking `git`/`jj` to resurrect

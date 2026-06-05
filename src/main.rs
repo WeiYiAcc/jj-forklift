@@ -26,10 +26,10 @@ use unicode_normalization::UnicodeNormalization;
 /// color escapes. Set once via [`init_ui`]; defaults to colored output.
 static UI_COLOR: OnceLock<bool> = OnceLock::new();
 
-const JJ_STACK_LOG_ENV: &str = "JJ_STACK_LOG";
-const JJ_STACK_LOG_STDERR_ENV: &str = "JJ_STACK_LOG_STDERR";
-const DEFAULT_FILE_LOG_FILTER: &str = "warn,jj_stack=debug";
-const DEFAULT_STDERR_LOG_FILTER: &str = "info,jj_stack=debug";
+const FORKLIFT_LOG_ENV: &str = "FORKLIFT_LOG";
+const FORKLIFT_LOG_STDERR_ENV: &str = "FORKLIFT_LOG_STDERR";
+const DEFAULT_FILE_LOG_FILTER: &str = "warn,forklift=debug";
+const DEFAULT_STDERR_LOG_FILTER: &str = "info,forklift=debug";
 
 /// Returns whether the user-facing status macros should emit ANSI color.
 ///
@@ -64,9 +64,9 @@ impl TraceLog {
 /// Initializes the global `tracing` subscriber.
 ///
 /// By default, trace events are written to a per-run log file using
-/// `warn,jj_stack=debug`. Set `JJ_STACK_LOG` to override the file log filter,
+/// `warn,forklift=debug`. Set `FORKLIFT_LOG` to override the file log filter,
 /// or set it to `off`/`false`/`0` to disable file logging. Stderr tracing is
-/// opt-in via `JJ_STACK_LOG_STDERR`.
+/// opt-in via `FORKLIFT_LOG_STDERR`.
 #[tracing::instrument(skip_all)]
 fn init_tracing(command_name: &str) -> TraceLog {
     let (file_writer, file_guard, log_path) = if file_logging_enabled() {
@@ -76,7 +76,7 @@ fn init_tracing(command_name: &str) -> TraceLog {
                 (Some(writer), Some(guard), Some(path))
             }
             Err(error) => {
-                eprintln!("warning: failed to create jj-stack debug log: {error:#}");
+                eprintln!("warning: failed to create forklift debug log: {error:#}");
                 (None, None, None)
             }
         }
@@ -84,7 +84,7 @@ fn init_tracing(command_name: &str) -> TraceLog {
         (None, None, None)
     };
 
-    let file_filter = env_filter_or_default(JJ_STACK_LOG_ENV, DEFAULT_FILE_LOG_FILTER);
+    let file_filter = env_filter_or_default(FORKLIFT_LOG_ENV, DEFAULT_FILE_LOG_FILTER);
     let file_layer = file_writer.map(|writer| {
         tracing_logfmt::builder()
             .layer()
@@ -119,14 +119,14 @@ fn init_tracing(command_name: &str) -> TraceLog {
 }
 
 fn file_logging_enabled() -> bool {
-    match env::var(JJ_STACK_LOG_ENV) {
+    match env::var(FORKLIFT_LOG_ENV) {
         Ok(value) => !is_false_env_value(&value),
         Err(_) => !cfg!(test),
     }
 }
 
 fn stderr_filter() -> Option<EnvFilter> {
-    let value = env::var(JJ_STACK_LOG_STDERR_ENV).ok()?;
+    let value = env::var(FORKLIFT_LOG_STDERR_ENV).ok()?;
     if is_false_env_value(&value) {
         return None;
     }
@@ -134,7 +134,7 @@ fn stderr_filter() -> Option<EnvFilter> {
         return Some(EnvFilter::new(DEFAULT_STDERR_LOG_FILTER));
     }
     Some(env_filter_from_value(
-        JJ_STACK_LOG_STDERR_ENV,
+        FORKLIFT_LOG_STDERR_ENV,
         &value,
         DEFAULT_STDERR_LOG_FILTER,
     ))
@@ -186,7 +186,7 @@ fn debug_log_dir() -> PathBuf {
         .ok()
         .and_then(|cwd| discover_jj_repo_dir(&cwd))
         .map(|repo_dir| repo_dir.join(CONFIG_PREFIX).join("logs"))
-        .unwrap_or_else(|| xdg_state_home().join("jj-stack").join("logs"))
+        .unwrap_or_else(|| xdg_state_home().join("forklift").join("logs"))
 }
 
 fn discover_jj_repo_dir(start: &Path) -> Option<PathBuf> {
@@ -333,23 +333,23 @@ const PR_API_JQ: &str = "{number,state,headRefName:.head.ref,baseRefName:.base.r
 const STACK_COMMENT_MARKER: &str = "<!-- stack:v1 -->";
 const STACK_COMMENT_JQ: &str =
     ".[] | {id,body,userLogin:.user.login,updatedAt:.updated_at} | @json";
-const JJ_CONFIG_FROZEN_ALIAS_KEY: &str = "revset-aliases.\"jj_stack_frozen_heads()\"";
+const JJ_CONFIG_FROZEN_ALIAS_KEY: &str = "revset-aliases.\"forklift_frozen_heads()\"";
 const JJ_CONFIG_IMMUTABLE_ALIAS_KEY: &str = "revset-aliases.\"immutable_heads()\"";
 const JJ_CONFIG_BASE_IMMUTABLE_ALIAS_KEY: &str =
-    "revset-aliases.\"jj_stack_base_immutable_heads()\"";
-const JJ_FROZEN_ALIAS_VALUE: &str = "bookmarks(glob:'jj-stack/frozen/*')";
+    "revset-aliases.\"forklift_base_immutable_heads()\"";
+const JJ_FROZEN_ALIAS_VALUE: &str = "bookmarks(glob:'forklift/frozen/*')";
 const JJ_DEFAULT_IMMUTABLE_ALIAS_VALUE: &str = "builtin_immutable_heads()";
 const JJ_REQUIRED_IMMUTABLE_ALIAS_VALUE: &str =
-    "builtin_immutable_heads() | jj_stack_frozen_heads()";
+    "builtin_immutable_heads() | forklift_frozen_heads()";
 const JJ_WRAPPED_IMMUTABLE_ALIAS_VALUE: &str =
-    "jj_stack_base_immutable_heads() | jj_stack_frozen_heads()";
+    "forklift_base_immutable_heads() | forklift_frozen_heads()";
 const BOOKMARK_STATUS_TEMPLATE: &str = "remote ++ \"\\t\" ++ if(tracked, \"tracked\", \"untracked\") ++ \"\\t\" ++ if(conflict, \"conflicted\", \"ok\") ++ \"\\n\"";
 const LOCAL_BOOKMARK_TEMPLATE: &str = "name ++ \"\\t\" ++ remote ++ \"\\n\"";
 const FROZEN_BOOKMARK_TEMPLATE: &str = "name ++ \"\\t\" ++ if(conflict, \"conflicted\", \"ok\") ++ \"\\t\" ++ if(conflict, \"\", normal_target.commit_id()) ++ \"\\n\"";
-const FROZEN_BOOKMARK_PREFIX: &str = "jj-stack/frozen/pr-";
+const FROZEN_BOOKMARK_PREFIX: &str = "forklift/frozen/pr-";
 
 #[derive(Debug, Parser)]
-#[command(name = "jj-stack", about = "Manage a jj-native stacked PR workflow")]
+#[command(name = "forklift", about = "Manage a jj-native stacked PR workflow")]
 struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
@@ -780,7 +780,7 @@ fn run_command(cli: Cli, runner: &impl CommandRunner) -> Result<()> {
 #[tracing::instrument(skip_all)]
 fn phase_error(phase: &str, object: impl Display, error: anyhow::Error) -> anyhow::Error {
     anyhow!(
-        "phase={phase} object={object} error={error} safe-next-command=`jj-stack submit --dry-run`"
+        "phase={phase} object={object} error={error} safe-next-command=`forklift submit --dry-run`"
     )
 }
 
@@ -940,7 +940,7 @@ fn plan_startup_config(
                 );
             }
         }
-        value if value.contains("jj_stack_frozen_heads()") => {}
+        value if value.contains("forklift_frozen_heads()") => {}
         custom => match base {
             None => {
                 actions.push(StartupConfigAction {
@@ -967,7 +967,7 @@ fn jj_config_required(runner: &impl CommandRunner, key: &str) -> Result<String> 
     let output = runner.run("jj", &args)?;
     if !output.success {
         bail!(
-            "failed-command=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "failed-command=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             display_command("jj", &args),
             output.stderr.trim()
         );
@@ -1005,7 +1005,7 @@ fn set_jj_repo_config(
     let output = runner.run("jj", &args)?;
     if !output.success {
         bail!(
-            "failed-command=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "failed-command=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             display_command("jj", &args),
             output.stderr.trim()
         );
@@ -1949,7 +1949,7 @@ fn unfreeze_stack(
         .map_err(|error| phase_error("validate-frozen", &frozen_name, error))?;
     if frozen_target != pr.head_ref_oid {
         bail!(
-            "phase=validate-frozen object={} error=frozen bookmark points at {}, but GitHub PR #{} head is {}; run `jj-stack sync` first before unfreezing safe-next-command=`jj-stack sync`",
+            "phase=validate-frozen object={} error=frozen bookmark points at {}, but GitHub PR #{} head is {}; run `forklift sync` first before unfreezing safe-next-command=`forklift sync`",
             frozen_name,
             frozen_target,
             pr.number,
@@ -2880,7 +2880,7 @@ fn status_report(
                     Err(error) => merge_blockers.push(error.to_string()),
                 }
             }
-            None => merge_blockers.push("run `jj-stack submit` before merging".to_owned()),
+            None => merge_blockers.push("run `forklift submit` before merging".to_owned()),
         }
     }
     problems.extend(merge_blockers.iter().cloned());
@@ -2948,7 +2948,7 @@ fn status_frozen_dependencies(
                 Ok(pr) => {
                     let problem = if pr.head_ref_oid != dependency.change.commit_id {
                         Some(format!(
-                            "frozen dependency `{}` is stale: local {} but GitHub PR #{} head is {}; run `jj-stack sync`",
+                            "frozen dependency `{}` is stale: local {} but GitHub PR #{} head is {}; run `forklift sync`",
                             dependency.bookmark.name,
                             dependency.change.commit_id,
                             pr.number,
@@ -2958,7 +2958,7 @@ fn status_frozen_dependencies(
                         && !pr.state.eq_ignore_ascii_case("MERGED")
                     {
                         Some(format!(
-                            "frozen dependency `{}` PR #{} is `{}`; run `jj-stack sync`",
+                            "frozen dependency `{}` PR #{} is `{}`; run `forklift sync`",
                             dependency.bookmark.name, pr.number, pr.state
                         ))
                     } else {
@@ -2999,23 +2999,23 @@ fn suggested_status_next_command(
 ) -> String {
     if problems
         .iter()
-        .any(|problem| problem.contains("jj-stack sync") || problem.contains("frozen dependency"))
+        .any(|problem| problem.contains("forklift sync") || problem.contains("frozen dependency"))
     {
-        return "jj-stack sync".to_owned();
+        return "forklift sync".to_owned();
     }
     if owned_prs
         .iter()
         .any(|owned| matches!(owned.action.as_str(), "create" | "update" | "blocked"))
     {
-        return "jj-stack submit".to_owned();
+        return "forklift submit".to_owned();
     }
     if !merge_blockers.is_empty() {
         return "resolve merge blockers".to_owned();
     }
     if !frozen_dependencies.is_empty() {
-        return "jj-stack merge".to_owned();
+        return "forklift merge".to_owned();
     }
-    "jj-stack merge".to_owned()
+    "forklift merge".to_owned()
 }
 
 #[tracing::instrument(skip_all)]
@@ -3469,7 +3469,7 @@ fn fast_forward_trunk_over_stack(
     )?;
     if !is_ancestor.success {
         bail!(
-            "trunk `{}` cannot fast-forward to {}: remote {} is not an ancestor; run `jj-stack sync` first",
+            "trunk `{}` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift sync` first",
             config.trunk,
             top_commit,
             remote
@@ -3857,7 +3857,7 @@ fn cleanup_landed_branches(
 
 /// Republish the PRs left above a targeted merge.
 ///
-/// `jj-stack merge <target>` narrows the merge to `::target`, so PRs above the
+/// `forklift merge <target>` narrows the merge to `::target`, so PRs above the
 /// target are never re-submitted by the merge loop even though their changes
 /// were rebased (when the merged changes were abandoned) and their stack
 /// comments still list the now-merged PRs. Re-resolving the full stack and
@@ -3902,14 +3902,14 @@ fn validate_merge_frozen_dependencies(
         )?;
         if pr.state.eq_ignore_ascii_case("OPEN") {
             bail!(
-                "frozen dependency `{}` is still open as PR #{}; merge dependencies first, then run `jj-stack sync` before merging owned PRs",
+                "frozen dependency `{}` is still open as PR #{}; merge dependencies first, then run `forklift sync` before merging owned PRs",
                 dependency.bookmark.name,
                 pr.number
             );
         }
         if !pr.state.eq_ignore_ascii_case("MERGED") {
             bail!(
-                "frozen dependency `{}` PR #{} is `{}`; run `jj-stack sync` before merging owned PRs",
+                "frozen dependency `{}` PR #{} is `{}`; run `forklift sync` before merging owned PRs",
                 dependency.bookmark.name,
                 pr.number,
                 pr.state
@@ -3922,7 +3922,7 @@ fn validate_merge_frozen_dependencies(
         .eq_ignore_ascii_case(&config.trunk)
     {
         bail!(
-            "frozen dependencies are merged, but bottom owned PR #{} still targets `{}` instead of trunk `{}`; run `jj-stack sync` before merging",
+            "frozen dependencies are merged, but bottom owned PR #{} still targets `{}` instead of trunk `{}`; run `forklift sync` before merging",
             bottom_owned_pr.number,
             bottom_owned_pr.base_ref_name,
             config.trunk
@@ -4005,7 +4005,7 @@ fn resolve_merge_pr_from_live_bookmarks(
     match matches.as_slice() {
         [(comment_id, pr)] => Ok((pr.clone().into_cache_entry(comment_id.clone()), pr.clone())),
         [] => bail!(
-            "no live tracked PR found for {}/{}; run `jj-stack submit` before merging so jj-stack can verify the owned PR",
+            "no live tracked PR found for {}/{}; run `forklift submit` before merging so forklift can verify the owned PR",
             github.repo,
             change.change_id
         ),
@@ -4168,7 +4168,7 @@ fn validate_pr_ready_for_merge(
     }
     if pr.head_ref_oid != change.commit_id || pr.head_ref_oid != entry.head_sha {
         bail!(
-            "PR #{} head is {}, but jj change {} is {} and cache expects {}; run `jj-stack submit` before merging",
+            "PR #{} head is {}, but jj change {} is {} and cache expects {}; run `forklift submit` before merging",
             entry.pr_number,
             pr.head_ref_oid,
             change.change_id,
@@ -4178,7 +4178,7 @@ fn validate_pr_ready_for_merge(
     }
     if !pr.base_ref_name.eq_ignore_ascii_case(&config.trunk) {
         bail!(
-            "PR #{} base is `{}`, but the bottom of the stack must target trunk `{}`; run `jj-stack submit` to repoint the base before merging",
+            "PR #{} base is `{}`, but the bottom of the stack must target trunk `{}`; run `forklift submit` to repoint the base before merging",
             entry.pr_number,
             pr.base_ref_name,
             config.trunk
@@ -4311,7 +4311,7 @@ fn sync_stack(
         .map_err(|error| phase_error("sync-fetch", &config.remote, error))?;
 
     // Remove stack branches whose commits already landed in trunk (e.g. merged
-    // by a prior `jj-stack merge` or directly on GitHub). Done before resolving
+    // by a prior `forklift merge` or directly on GitHub). Done before resolving
     // the stack so it still runs when no owned stack remains after a merge.
     let cleaned_branches = cleanup_landed_branches(runner, config, diagnostics)
         .map_err(|error| phase_error("cleanup-merged", "branches", error))?;
@@ -4853,7 +4853,7 @@ fn frozen_bookmarks(runner: &impl CommandRunner) -> Result<Vec<FrozenBookmark>> 
     let args = [
         "bookmark",
         "list",
-        "jj-stack/frozen/*",
+        "forklift/frozen/*",
         "-T",
         FROZEN_BOOKMARK_TEMPLATE,
     ];
@@ -4926,7 +4926,7 @@ fn resolve_purely_frozen_stack(
 ) -> Result<StackResolution> {
     if frozen_bookmarks.is_empty() {
         bail!(
-            "unsupported stack shape: empty owned stack and no frozen bookmarks in scope. Run `jj-stack get <pr>` first or move to a mutable stack."
+            "unsupported stack shape: empty owned stack and no frozen bookmarks in scope. Run `forklift get <pr>` first or move to a mutable stack."
         );
     }
     let at_commit =
@@ -4935,7 +4935,7 @@ fn resolve_purely_frozen_stack(
     let Some(frozen_dependencies) = frozen_dependency_chain_ending_at(&frozen_changes, &at_commit)?
     else {
         bail!(
-            "unsupported stack shape: empty owned stack and current revision {} is not a `jj-stack/frozen/pr-*` bookmark target. Run `jj-stack get <pr>` first or move to a mutable stack.",
+            "unsupported stack shape: empty owned stack and current revision {} is not a `forklift/frozen/pr-*` bookmark target. Run `forklift get <pr>` first or move to a mutable stack.",
             at_commit
         );
     };
@@ -5098,7 +5098,7 @@ fn frozen_dependencies_below_owned(
             .collect::<Vec<_>>()
             .join(", ");
         bail!(
-            "unsupported stack shape: multiple frozen boundaries below owned root {} ({} boundaries): {boundary_labels}. Run `jj-stack sync` from a single linear stack.",
+            "unsupported stack shape: multiple frozen boundaries below owned root {} ({} boundaries): {boundary_labels}. Run `forklift sync` from a single linear stack.",
             root.change_id,
             nearest.len()
         );
@@ -5298,7 +5298,7 @@ fn resolve_submit_head_branch(
 
     if let Some(remote_head) = &expected_remote_head {
         bail!(
-            "remote branch `{}` already exists at {} but local jj-stack cache does not identify a safe matching PR; refusing to push over it. Run `jj-stack get` for the PR that owns it, delete the branch, or choose a different change title.",
+            "remote branch `{}` already exists at {} but local forklift cache does not identify a safe matching PR; refusing to push over it. Run `forklift get` for the PR that owns it, delete the branch, or choose a different change title.",
             head_branch,
             remote_head
         );
@@ -5468,7 +5468,7 @@ fn submit_stack(
             let live = expected_remote_head.as_deref();
             if live != Some(change.commit_id.as_str()) && live != Some(entry.head_sha.as_str()) {
                 bail!(
-                    "phase=plan-submit object=head:{head_branch} error=remote branch is at {} but cache recorded {}; it advanced out-of-band, refusing to force-push. safe-next-command=`jj-stack submit --dry-run`",
+                    "phase=plan-submit object=head:{head_branch} error=remote branch is at {} but cache recorded {}; it advanced out-of-band, refusing to force-push. safe-next-command=`forklift submit --dry-run`",
                     live.unwrap_or("<absent>"),
                     entry.head_sha
                 );
@@ -5644,7 +5644,7 @@ fn validate_submit_frozen_dependency_pr(
     validate_get_pr_metadata(github, pr)?;
     if !pr.state.eq_ignore_ascii_case("OPEN") {
         bail!(
-            "frozen dependency `{}` points to PR #{}, but GitHub reports state {}; run `jj-stack sync` before submitting",
+            "frozen dependency `{}` points to PR #{}, but GitHub reports state {}; run `forklift sync` before submitting",
             dependency.bookmark.name,
             pr.number,
             pr.state
@@ -5654,14 +5654,14 @@ fn validate_submit_frozen_dependency_pr(
     let base_repo = get_pr_repo(pr, "base")?;
     if head_repo.name_with_owner != github.repo || base_repo.name_with_owner != github.repo {
         bail!(
-            "frozen dependency `{}` PR #{} must be same-repo before submit; run `jj-stack sync` or unfreeze manually",
+            "frozen dependency `{}` PR #{} must be same-repo before submit; run `forklift sync` or unfreeze manually",
             dependency.bookmark.name,
             pr.number
         );
     }
     if pr.head_ref_oid != dependency.change.commit_id {
         bail!(
-            "frozen dependency `{}` points at {}, but GitHub PR #{} head is {}; run `jj-stack sync` before submitting",
+            "frozen dependency `{}` points at {}, but GitHub PR #{} head is {}; run `forklift sync` before submitting",
             dependency.bookmark.name,
             dependency.change.commit_id,
             pr.number,
@@ -5764,13 +5764,13 @@ fn stack_comment_body_with_frozen(
         .find(|(change_id, _)| change_id == current_change_id)
     {
         body.push_str(&format!(
-            "Check out this stack: `jj-stack get {}`\n",
+            "Check out this stack: `forklift get {}`\n",
             github_pr_url(&context.github.repo, entry.pr_number)
         ));
     }
-    body.push_str("Pull/update this stack: `jj-stack sync`\n");
-    body.push_str("Publish local edits: `jj-stack submit`\n");
-    body.push_str("Merge when ready: `jj-stack merge`\n");
+    body.push_str("Pull/update this stack: `forklift sync`\n");
+    body.push_str("Publish local edits: `forklift submit`\n");
+    body.push_str("Merge when ready: `forklift merge`\n");
 
     body
 }
@@ -6042,7 +6042,7 @@ fn set_submit_bookmark(
     let output = runner.run("jj", &args)?;
     if !output.success {
         bail!(
-            "phase=push-refs object=bookmark:{} failed-command=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "phase=push-refs object=bookmark:{} failed-command=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             plan.head_branch,
             display_command("jj", &args),
             output.stderr.trim()
@@ -6071,7 +6071,7 @@ fn push_submit_bookmark(
     let output = runner.run("jj", &args)?;
     if !output.success {
         bail!(
-            "phase=push-refs object=bookmark:{} failed-command=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "phase=push-refs object=bookmark:{} failed-command=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             plan.head_branch,
             display_command("jj", &args),
             output.stderr.trim()
@@ -6155,7 +6155,7 @@ fn run_pr_api(
     let output = runner.run("gh", args)?;
     if !output.success {
         bail!(
-            "phase=github-pr-{action} object=change:{change_id} failed-api=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "phase=github-pr-{action} object=change:{change_id} failed-api=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             display_command("gh", args),
             output.stderr.trim()
         );
@@ -6261,7 +6261,7 @@ fn list_stack_comments(
     let output = runner.run("gh", &args)?;
     if !output.success {
         bail!(
-            "phase=stack-comments object=PR #{} change:{} failed-api=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "phase=stack-comments object=PR #{} change:{} failed-api=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             pr_number,
             change_id,
             display_command("gh", &args),
@@ -6384,7 +6384,7 @@ fn run_comment_mutation(
     let output = runner.run("gh", args)?;
     if !output.success {
         bail!(
-            "phase=stack-comments object=PR #{} change:{} failed-api=`{}` error={} safe-next-command=`jj-stack submit --dry-run`",
+            "phase=stack-comments object=PR #{} change:{} failed-api=`{}` error={} safe-next-command=`forklift submit --dry-run`",
             pr_number,
             change_id,
             display_command("gh", args),
@@ -6468,7 +6468,7 @@ fn validate_cached_pr_metadata(
     ];
     if let Some((field, _)) = required.iter().find(|(_, value)| value.trim().is_empty()) {
         bail!(
-            "unsupported PR state for {}/{}: missing required metadata field `{}`; run `jj-stack get {}` or recreate the PR branch with jj-stack",
+            "unsupported PR state for {}/{}: missing required metadata field `{}`; run `forklift get {}` or recreate the PR branch with forklift",
             github.repo,
             change_id,
             field,

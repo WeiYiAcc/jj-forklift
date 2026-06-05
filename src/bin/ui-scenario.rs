@@ -132,9 +132,9 @@ fn run_merge_scenario(scenario: Scenario) -> Result<()> {
 
     eprintln!("ui-scenario: {}", scenario.name());
     eprintln!("fixture: {}", fixture.root.display());
-    eprintln!("running: jj-stack merge --admin");
+    eprintln!("running: forklift merge --admin");
 
-    let status = fixture.run_jj_stack(["merge", "--admin"])?;
+    let status = fixture.run_forklift(["merge", "--admin"])?;
     if !status.success() {
         bail!("scenario `{}` failed with status {status}", scenario.name());
     }
@@ -366,9 +366,9 @@ impl Fixture {
         Ok(output.trim().to_owned())
     }
 
-    fn run_jj_stack<const N: usize>(&self, args: [&str; N]) -> Result<std::process::ExitStatus> {
+    fn run_forklift<const N: usize>(&self, args: [&str; N]) -> Result<std::process::ExitStatus> {
         let old_path = env::var("PATH").unwrap_or_default();
-        let mut command = Command::new(resolve_jj_stack_bin()?);
+        let mut command = Command::new(resolve_forklift_bin()?);
         command
             .args(args)
             .current_dir(&self.workspace)
@@ -442,8 +442,8 @@ impl Fixture {
     }
 }
 
-fn resolve_jj_stack_bin() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("JJ_STACK_BIN") {
+fn resolve_forklift_bin() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("FORKLIFT_BIN") {
         let path = PathBuf::from(path);
         return if path.is_absolute() {
             Ok(path)
@@ -453,12 +453,12 @@ fn resolve_jj_stack_bin() -> Result<PathBuf> {
     }
     let current = env::current_exe()?;
     if let Some(dir) = current.parent() {
-        let sibling = dir.join("jj-stack");
+        let sibling = dir.join("forklift");
         if sibling.exists() {
             return Ok(sibling);
         }
     }
-    Ok(PathBuf::from("jj-stack"))
+    Ok(PathBuf::from("forklift"))
 }
 
 fn init_cache_schema(conn: &Connection) -> Result<()> {
@@ -535,7 +535,7 @@ fn write_executable(path: &Path, contents: &str) -> Result<()> {
 
 fn unique_dir(name: &str) -> Result<PathBuf> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let path = env::temp_dir().join(format!("jj-stack-ui-{name}-{}-{nanos}", std::process::id()));
+    let path = env::temp_dir().join(format!("forklift-ui-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&path)?;
     Ok(path)
 }
