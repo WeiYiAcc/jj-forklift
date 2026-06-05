@@ -121,59 +121,27 @@ Manually take ownership of a frozen revision you can push to.
 
 ## Related tools
 
-Jujutsu Stack is one of several tools for turning a jj stack into pull requests.
-Here is how the jj-native tools compare:
+Jujutsu Stack targets shared stacks: it merges a whole stack from the CLI by
+fast-forwarding trunk and freezes revisions you don't own, with no merge queue.
+How the jj-native tools compare:
 
-- **Jujutsu Stack**: lightweight, Graphite-style workflow.
-  - **Workflow:** `jj` new/edit/describe → `jj-stack submit` → `jj-stack merge` (plus `get`/`sync` to pull and rebase others' stacks).
-  - **Speed:** fast; merges locally with no queue or CI gate.
-  - **Collaboration:** freezes revisions you don't own so you can't clobber them.
-  - **Multi-PR support:** merges the whole stack in one command.
-  - **Merge:** from the CLI, by fast-forwarding trunk.
-  - **Auth:** `gh` CLI, no token.
-- **[jj-spr](https://github.com/jennings/jj-spr)**: amend PRs without force-pushes (Jujutsu port of spr).
-  - **Workflow:** amend a commit → `jj spr update` → `jj spr land`.
-  - **Speed:** fast; local squash-merge.
-  - **Collaboration:** none.
-  - **Multi-PR support:** one PR at a time, with a manual rebase after each land.
-  - **Merge:** from the CLI, squash via the GitHub API.
-  - **Auth:** access token with `repo` scope.
-- **[jjpr](https://github.com/michaeldhopkins/jjpr)**: multi-forge, automated merging.
-  - **Workflow:** set bookmarks → `jjpr watch` opens draft PRs → promotes on passing CI → merges bottom-up.
-  - **Speed:** medium; waits for CI to pass before merging.
-  - **Collaboration:** can target your PR onto a coworker's unmerged branch.
-  - **Multi-PR support:** merges the stack bottom-up.
-  - **Merge:** from the CLI, via the forge API.
-  - **Auth:** `gh`/`glab` credentials or a token.
-- **[jj-ryu](https://github.com/dmmulroy/jj-ryu)**: chained PRs on GitHub and GitLab.
-  - **Workflow:** create named bookmarks → `ryu submit` → `ryu sync`.
-  - **Speed:** submitting is fast; you merge by hand.
-  - **Collaboration:** none.
-  - **Multi-PR support:** no merge command; merge each PR yourself.
-  - **Merge:** in the GitHub web UI.
-  - **Auth:** `gh`/`glab` credentials or a token.
-- **[jj-vine](https://codeberg.org/abrenneke/jj-vine)**: flexible, no fixed workflow.
-  - **Workflow:** push bookmarks → `jj-vine submit` opens or updates PRs with a stack diagram.
-  - **Speed:** submitting is fast; you merge by hand.
-  - **Collaboration:** none.
-  - **Multi-PR support:** none yet; merging is not built.
-  - **Merge:** in the GitHub web UI.
-  - **Auth:** access token in config.
-- **[keanemind/jj-stack](https://github.com/keanemind/jj-stack)**: turn a jj stack into PRs.
-  - **Workflow:** name a bookmark per change → `jst submit` → merge the bottom PR → rerun to retarget.
-  - **Speed:** submitting is fast; you merge by hand.
-  - **Collaboration:** none.
-  - **Multi-PR support:** one PR at a time; merge the bottom, then rerun.
-  - **Merge:** in the GitHub web UI.
-  - **Auth:** `gh` CLI or a token.
+| Tool | Merge | Speed | Multi-PR | Collaboration\* | Auth |
+| ---- | ----- | ----- | -------- | --------------- | ---- |
+| **Jujutsu Stack** | **CLI, FF trunk** | **fast; no queue or CI gate** | **whole stack, one command** | **ownership freeze + handoff** | **`gh`, no token** |
+| [jj-spr](https://github.com/jennings/jj-spr) | CLI, squash via API | fast; local squash | one at a time, manual rebase | none | token, `repo` scope |
+| [jjpr](https://github.com/michaeldhopkins/jjpr) | CLI, forge API | medium; waits on CI | bottom-up | targets a coworker's branch | `gh`/`glab` or token |
+| [jj-ryu](https://github.com/dmmulroy/jj-ryu) | GitHub web UI | fast submit, manual merge | merge each PR yourself | none | `gh`/`glab` or token |
+| [jj-vine](https://codeberg.org/abrenneke/jj-vine) | GitHub web UI | fast submit, manual merge | not built yet | none | token in config |
+| [keanemind/jj-stack](https://github.com/keanemind/jj-stack) | GitHub web UI | fast submit, manual merge | merge bottom, then rerun | none | `gh` or token |
 
-In the Git world, the analogous tools are
-[Graphite](https://graphite.dev) (a proprietary SaaS that merges through a
-hosted, stack-aware merge queue and supports shared stacks, billed per seat),
-[spr](https://github.com/ejoffe/spr) (an open-source Go CLI that merges locally,
-one commit per PR), and [ghstack](https://github.com/ezyang/ghstack) (an
-open-source Python CLI whose branch layout means PRs can't be merged from the
-GitHub UI).
+\* *Collaboration* = a managed ownership model for shared stacks: import a
+teammate's stack and keep their revisions frozen until you explicitly take them
+over. **none** = no such model; jj's default only marks untracked remote
+bookmarks immutable, which stops protecting once you track the branch.
+
+In the Git world, the analogous tools are [Graphite](https://graphite.dev),
+[spr](https://github.com/ejoffe/spr), and
+[ghstack](https://github.com/ezyang/ghstack).
 
 ## License
 
