@@ -314,8 +314,6 @@ fn phase_label(phase: &str) -> (&'static str, &str) {
         "sync-submit" => ("Submitting", "stack"),
         "cleanup-branches" => ("Cleaning", "branches"),
         "cleanup-merged" => ("Cleaning", "merged branches"),
-        "save-cache" => ("Writing", "cache"),
-        "write-cache" => ("Writing", "cache"),
         other => ("Running", other),
     }
 }
@@ -1575,6 +1573,31 @@ struct SubmitPlan {
     pr_update_needed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitPrAction {
+    Submit,
+    Update,
+    Nothing,
+}
+
+impl SubmitPrAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Submit => "submit",
+            Self::Update => "update",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    fn progress_verb(self) -> &'static str {
+        match self {
+            Self::Submit => "Submitted",
+            Self::Update => "Updated",
+            Self::Nothing => "Nothing",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SyncSummary {
     rebased_roots: usize,
@@ -1660,7 +1683,7 @@ impl Diagnostics {
         tracing::debug!(phase, "recovery phase");
         // Dry runs narrate via the `- would ...` plan lines instead, so we
         // don't double-report with progress output there.
-        if !self.dry_run {
+        if !self.dry_run && !matches!(phase, "save-cache" | "write-cache") {
             let (verb, message) = phase_label(phase);
             ui_progress(verb, message);
         }
@@ -1677,19 +1700,38 @@ impl Diagnostics {
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    fn progress_counter(self, verb: &str, message: impl Display, current: usize, total: usize) {
-        if self.dry_run || total <= 1 {
-            return;
-        }
-        ui_progress(verb, &format!("{message} {current}/{total}"));
-    }
-
-    #[tracing::instrument(level = "trace", skip_all)]
     fn progress_bar(self, verb: &str, message: &str, total: usize) -> Option<ProgressBar> {
         if self.dry_run || total == 0 {
             return None;
         }
-        ui_progress_bar(verb, message, total)
+        let progress = ui_progress_bar(verb, message, total);
+        if progress.is_none() {
+            ui_progress(verb, message);
+        }
+        progress
+    }
+
+    #[tracing::instrument(level = "trace", skip_all)]
+    fn submit_pr_action(
+        self,
+        repo: &str,
+        change: &ResolvedChange,
+        action: SubmitPrAction,
+        entry: &PrCacheEntry,
+    ) {
+        if self.dry_run {
+            return;
+        }
+        ui_progress(
+            action.progress_verb(),
+            &format!(
+                "PR #{} {} - action: {} - {}",
+                entry.pr_number,
+                github_pr_url(repo, entry.pr_number),
+                action.label(),
+                change.title
+            ),
+        );
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -3210,7 +3252,6 @@ fn merge_stack(
     // Resolve and validate every PR in the stack. Re-point each PR's base to
     // trunk so a single fast-forward push of trunk auto-merges all of them:
     // GitHub only marks a PR merged once its head lands in its *base* branch.
-    diagnostics.phase("merge-pr-check");
     let mut pr_numbers: Vec<u64> = Vec::new();
     // Every stack branch ends up fully merged into trunk, so collect their head
     // branches to delete once the merge is verified.
@@ -3352,7 +3393,6 @@ fn merge_stack(
     summary.submit_runs += 1;
 
     // GitHub marks each PR merged asynchronously once its head lands in trunk.
-    diagnostics.phase("verify-merge");
     verify_prs_merged(runner, &context.github, &pr_numbers, diagnostics)
         .map_err(|error| phase_error("verify-merge", &context.github.repo, error))?;
     summary.merged_prs = pr_numbers.len();
@@ -3361,7 +3401,6 @@ fn merge_stack(
     // re-pointed to trunk above, so this never cascade-closes an open PR. The
     // merge already succeeded, so treat cleanup as best-effort: a failure here
     // (e.g. GitHub already auto-deleted the head branch) must not fail the merge.
-    diagnostics.phase("cleanup-branches");
     summary.cleaned_branches += cleanup_merged_branches(
         runner,
         config,
@@ -3638,13 +3677,16 @@ fn cleanup_merged_branches(
 ) -> usize {
     let mut to_push: Vec<&str> = Vec::new();
     let mut cleaned = 0;
+    let progress = diagnostics.progress_bar("Cleaning", "branches", branches.len());
     for (index, branch) in branches.iter().enumerate() {
-        diagnostics.progress_counter("Cleaning", "branch", index + 1, branches.len());
         match open_pr_bases_on_branch(runner, github, branch) {
             Ok(true) => {
                 diagnostics.warn(format!(
                     "skipping cleanup of `{branch}`: an open PR still targets it as its base"
                 ));
+                if let Some(progress) = &progress {
+                    progress.set_position((index + 1) as u64);
+                }
                 continue;
             }
             Ok(false) => {}
@@ -3652,6 +3694,9 @@ fn cleanup_merged_branches(
                 diagnostics.warn(format!(
                     "could not check open PRs basing on `{branch}`, leaving it: {error:#}"
                 ));
+                if let Some(progress) = &progress {
+                    progress.set_position((index + 1) as u64);
+                }
                 continue;
             }
         }
@@ -3661,6 +3706,9 @@ fn cleanup_merged_branches(
                 config.remote
             ));
             cleaned += 1;
+            if let Some(progress) = &progress {
+                progress.set_position((index + 1) as u64);
+            }
             continue;
         }
         match delete_bookmark(runner, branch, diagnostics) {
@@ -3672,6 +3720,12 @@ fn cleanup_merged_branches(
                 "could not delete local bookmark `{branch}`: {error:#}"
             )),
         }
+        if let Some(progress) = &progress {
+            progress.set_position((index + 1) as u64);
+        }
+    }
+    if let Some(progress) = progress {
+        ui_finish_progress_bar(progress);
     }
     if !to_push.is_empty() {
         if let Err(error) = push_bookmark_deletions(runner, config, &to_push, diagnostics) {
@@ -4259,7 +4313,6 @@ fn sync_stack(
     // Remove stack branches whose commits already landed in trunk (e.g. merged
     // by a prior `jj-stack merge` or directly on GitHub). Done before resolving
     // the stack so it still runs when no owned stack remains after a merge.
-    diagnostics.phase("cleanup-merged");
     let cleaned_branches = cleanup_landed_branches(runner, config, diagnostics)
         .map_err(|error| phase_error("cleanup-merged", "branches", error))?;
 
@@ -5473,19 +5526,29 @@ fn submit_stack(
             .existing_pr
             .as_ref()
             .and_then(|entry| entry.stack_comment_id.clone());
-        let entry = match &plan.existing_pr {
-            None => create_pr(runner, &context.github, &plan, diagnostics)?
+        let (action, entry) = match &plan.existing_pr {
+            None => (
+                SubmitPrAction::Submit,
+                create_pr(runner, &context.github, &plan, diagnostics)?
+                    .into_cache_entry(previous_comment_id),
+            ),
+            Some(existing) if plan.pr_update_needed => (
+                SubmitPrAction::Update,
+                update_pr(
+                    runner,
+                    &context.github,
+                    existing.pr_number,
+                    &plan,
+                    diagnostics,
+                )?
                 .into_cache_entry(previous_comment_id),
-            Some(existing) if plan.pr_update_needed => update_pr(
-                runner,
-                &context.github,
-                existing.pr_number,
-                &plan,
-                diagnostics,
-            )?
-            .into_cache_entry(previous_comment_id),
-            Some(existing) => refreshed_cache_entry(existing, &plan, previous_comment_id),
+            ),
+            Some(existing) => (
+                SubmitPrAction::Nothing,
+                refreshed_cache_entry(existing, &plan, previous_comment_id),
+            ),
         };
+        diagnostics.submit_pr_action(&context.github.repo, &plan.change, action, &entry);
         save_submit_cache_entry(
             &mut store,
             &context.github.repo,

@@ -12,25 +12,41 @@ use serde_json::{Value, json};
 const CONFIG_PREFIX: &str = "stack";
 
 fn main() -> Result<()> {
-    let scenario = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "merge-two-prs-settle-slow".to_owned());
+    let Some(scenario) = env::args().nth(1) else {
+        print_scenarios();
+        return Ok(());
+    };
     match scenario.as_str() {
+        "submit-actions" => run_submit_actions_scenario(),
+        "sync-only" => run_sync_only_scenario(),
+        "sync-submit" => run_sync_submit_scenario(),
         "merge-two-prs-settle-slow" => run_merge_scenario(Scenario::SettleSlow),
         "verify-merge-slow" => run_merge_scenario(Scenario::VerifySlow),
         "cleanup-branches" => run_merge_scenario(Scenario::CleanupBranches),
-        "list" | "--list" | "-l" => {
-            println!("merge-two-prs-settle-slow");
-            println!("verify-merge-slow");
-            println!("cleanup-branches");
-            Ok(())
-        }
         other => {
             bail!(
-                "unknown scenario `{other}`\nknown scenarios: merge-two-prs-settle-slow, verify-merge-slow, cleanup-branches"
+                "unknown scenario `{other}`\nknown scenarios:\n{}",
+                scenario_list().join("\n")
             )
         }
     }
+}
+
+fn print_scenarios() {
+    for scenario in scenario_list() {
+        println!("{scenario}");
+    }
+}
+
+fn scenario_list() -> &'static [&'static str] {
+    &[
+        "submit-actions",
+        "sync-only",
+        "sync-submit",
+        "merge-two-prs-settle-slow",
+        "verify-merge-slow",
+        "cleanup-branches",
+    ]
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +64,66 @@ impl Scenario {
             Self::CleanupBranches => "cleanup-branches",
         }
     }
+}
+
+fn run_submit_actions_scenario() -> Result<()> {
+    let fixture = Fixture::new("submit-actions")?;
+    fixture.seed_submit_actions()?;
+
+    eprintln!("ui-scenario: submit-actions");
+    eprintln!("fixture: {}", fixture.root.display());
+    eprintln!("running: forklift submit");
+
+    let status = fixture.run_forklift(["submit"])?;
+    if !status.success() {
+        bail!("scenario `submit-actions` failed with status {status}");
+    }
+
+    eprintln!(
+        "scenario complete; fixture kept at {}",
+        fixture.root.display()
+    );
+    Ok(())
+}
+
+fn run_sync_only_scenario() -> Result<()> {
+    let fixture = Fixture::new("sync-only")?;
+    fixture.seed_sync_stack()?;
+
+    eprintln!("ui-scenario: sync-only");
+    eprintln!("fixture: {}", fixture.root.display());
+    eprintln!("running: forklift sync");
+
+    let status = fixture.run_forklift(["sync"])?;
+    if !status.success() {
+        bail!("scenario `sync-only` failed with status {status}");
+    }
+
+    eprintln!(
+        "scenario complete; fixture kept at {}",
+        fixture.root.display()
+    );
+    Ok(())
+}
+
+fn run_sync_submit_scenario() -> Result<()> {
+    let fixture = Fixture::new("sync-submit")?;
+    fixture.seed_submit_actions()?;
+
+    eprintln!("ui-scenario: sync-submit");
+    eprintln!("fixture: {}", fixture.root.display());
+    eprintln!("running: forklift sync --submit");
+
+    let status = fixture.run_forklift(["sync", "--submit"])?;
+    if !status.success() {
+        bail!("scenario `sync-submit` failed with status {status}");
+    }
+
+    eprintln!(
+        "scenario complete; fixture kept at {}",
+        fixture.root.display()
+    );
+    Ok(())
 }
 
 fn run_merge_scenario(scenario: Scenario) -> Result<()> {
@@ -129,6 +205,60 @@ impl Fixture {
 
     fn install_fake_gh(&self) -> Result<()> {
         write_executable(&self.bin_dir.join("gh"), GH_FAKE)
+    }
+
+    fn seed_submit_actions(&self) -> Result<()> {
+        let main = self.init_main()?;
+        let bottom = self.create_change("bottom.txt", "bottom title", "bottom body", "main")?;
+        let middle = self.create_change("middle.txt", "middle title", "middle body", "@")?;
+        let _top = self.create_change("top.txt", "top title", "top body", "@")?;
+        let bottom_branch = stack_branch("bottom-title", &bottom.change_id);
+        let middle_branch = stack_branch("middle-title", &middle.change_id);
+
+        self.set_bookmark(&bottom_branch, &bottom.commit_id)?;
+        self.set_bookmark(&middle_branch, &middle.commit_id)?;
+        self.push_bookmark(&bottom_branch)?;
+        self.push_bookmark(&middle_branch)?;
+
+        self.write_gh_state(&json!({
+            "next_pr_number": 13,
+            "prs": [
+                pr_json(11, "OPEN", &bottom_branch, "main", "bottom title", "bottom body"),
+                pr_json(12, "OPEN", &middle_branch, &bottom_branch, "middle title before update", "middle body before update"),
+            ],
+            "comments": {},
+        }))?;
+        self.write_cache(
+            &bottom.change_id,
+            11,
+            &bottom_branch,
+            "main",
+            &bottom.commit_id,
+            &main.commit_id,
+            "bottom title",
+            "bottom body",
+        )?;
+        self.write_cache(
+            &middle.change_id,
+            12,
+            &middle_branch,
+            &bottom_branch,
+            &middle.commit_id,
+            &bottom.commit_id,
+            "middle title before update",
+            "middle body before update",
+        )?;
+        Ok(())
+    }
+
+    fn seed_sync_stack(&self) -> Result<()> {
+        self.init_main()?;
+        let local = self.create_change("local.txt", "local title", "local body", "main")?;
+        self.create_change("upstream.txt", "upstream title", "upstream body", "main")?;
+        self.set_bookmark("main", "@")?;
+        self.push_bookmark("main")?;
+        run_ok_in(&self.workspace, "jj", &["edit", &local.change_id])?;
+        Ok(())
     }
 
     fn seed_two_pr_merge(&self, scenario: Scenario) -> Result<()> {
@@ -630,6 +760,24 @@ if args[:3] == ["api", "-X", "PATCH"] and args[3].startswith("repos/owner/repo/p
     scenario = load("scenario.json", "")
     if scenario == "merge-two-prs-settle-slow" and int(pr["number"]) == 12:
         pr["mergeable"] = "UNKNOWN"
+    save_state(state)
+    print(json.dumps(pr_view(state, pr)))
+    sys.exit(0)
+
+if args[:4] == ["api", "-X", "POST", "repos/owner/repo/pulls"]:
+    state = load_state()
+    values = field_values()
+    number = int(state.get("next_pr_number") or (max([int(pr["number"]) for pr in state["prs"]] or [0]) + 1))
+    state["next_pr_number"] = number + 1
+    pr = {
+        "number": number,
+        "state": "OPEN",
+        "headRefName": values.get("head", ""),
+        "baseRefName": values.get("base", ""),
+        "title": values.get("title", ""),
+        "body": values.get("body", ""),
+    }
+    state["prs"].append(pr)
     save_state(state)
     print(json.dumps(pr_view(state, pr)))
     sys.exit(0)

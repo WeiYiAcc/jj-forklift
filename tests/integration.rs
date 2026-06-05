@@ -28,6 +28,13 @@ fn one_change_submit_creates_pr() -> anyhow::Result<()> {
 
     let output = repo.run(&["submit", "--revset", REVSET])?;
     assert_success("submit", &output);
+    assert!(
+        stderr_of(&output).contains(
+            "Submitted PR #9 https://github.com/owner/repo/pull/9 - action: submit - change title"
+        ),
+        "stderr:\n{}",
+        stderr_of(&output)
+    );
 
     // The branch was pushed through jj to the real remote at the change commit.
     assert_eq!(repo.git_remote_branch_target(&branch)?, change.commit_id);
@@ -120,7 +127,22 @@ fn two_change_update_keeps_top_pr_based_on_bottom_branch() -> anyhow::Result<()>
     let bottom_after = repo.change_at(&stack[0].change_id)?;
     let top_after = repo.change_at(&stack[1].change_id)?;
 
-    assert_success("update submit", &repo.run(&["submit", "--revset", REVSET])?);
+    let output = repo.run(&["submit", "--revset", REVSET])?;
+    assert_success("update submit", &output);
+    assert!(
+        stderr_of(&output).contains(
+            "Updated PR #11 https://github.com/owner/repo/pull/11 - action: update - change 1 title edited"
+        ),
+        "stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        stderr_of(&output).contains(
+            "Updated PR #12 https://github.com/owner/repo/pull/12 - action: update - change 2 title"
+        ),
+        "stderr:\n{}",
+        stderr_of(&output)
+    );
 
     let bottom_pr = repo.stored_pr(11)?;
     assert_eq!(bottom_pr["baseRefName"], json!("main"));
@@ -151,7 +173,15 @@ fn noop_submit_skips_push_and_pr_mutation() -> anyhow::Result<()> {
     let pushed = repo.git_remote_branch_target(&branch)?;
 
     repo.clear_gh_requests()?;
-    assert_success("noop submit", &repo.run(&["submit", "--revset", REVSET])?);
+    let output = repo.run(&["submit", "--revset", REVSET])?;
+    assert_success("noop submit", &output);
+    assert!(
+        stderr_of(&output).contains(
+            "Nothing PR #9 https://github.com/owner/repo/pull/9 - action: nothing - change title"
+        ),
+        "stderr:\n{}",
+        stderr_of(&output)
+    );
 
     // No PR create or update on the second, no-op run.
     assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
