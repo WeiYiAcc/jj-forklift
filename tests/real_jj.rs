@@ -462,6 +462,36 @@ fn display_command(program: &str, args: &[&str]) -> String {
         .join(" ")
 }
 
+#[test]
+fn submit_outside_jj_repo_fails_with_clear_error() -> anyhow::Result<()> {
+    let dir = unique_dir("no-jj-repo")?;
+    let output = Command::new(env!("CARGO_BIN_EXE_jj-stack"))
+        .args(["submit", "--dry-run"])
+        .current_dir(&dir)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "expected failure outside a jj repo, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("not inside a jj repository"),
+        "expected clear preflight error, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("No repo config path found"),
+        "should not leak the raw jj config error, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("phase=") && !stderr.contains("safe-next-command="),
+        "should not leak structured breadcrumbs to the terminal, got: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 fn unique_dir(name: &str) -> anyhow::Result<PathBuf> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = env::temp_dir().join(format!(

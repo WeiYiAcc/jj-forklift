@@ -250,6 +250,24 @@ fn ui_progress(verb: &str, message: &str) {
     }
 }
 
+/// Emits a red `error:` line to stderr for a human-readable failure headline.
+fn ui_error(message: &str) {
+    if ui_color_enabled() {
+        eprintln!("{} {message}", "error:".red().bold());
+    } else {
+        eprintln!("error: {message}");
+    }
+}
+
+/// Emits a dimmed `hint:` line suggesting a safe next command.
+fn ui_hint(message: &str) {
+    if ui_color_enabled() {
+        eprintln!("{} {message}", "hint:".cyan().bold());
+    } else {
+        eprintln!("hint: {message}");
+    }
+}
+
 fn ui_progress_bar(verb: &str, message: &str, total: usize) -> Option<ProgressBar> {
     if total == 0 || !std::io::stderr().is_terminal() {
         return None;
@@ -533,9 +551,14 @@ impl CommandRunner for SystemRunner {
 }
 
 #[tracing::instrument(skip_all)]
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    run(cli, &SystemRunner)
+    // `run` prints a human-readable failure itself; main only sets the exit code
+    // so anyhow doesn't also dump the raw structured error to the terminal.
+    match run(cli, &SystemRunner) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(_) => std::process::ExitCode::FAILURE,
+    }
 }
 
 #[tracing::instrument(skip_all)]
@@ -556,11 +579,16 @@ fn run(cli: Cli, runner: &impl CommandRunner) -> Result<()> {
         "command start"
     );
 
-    let result = run_command(cli, runner);
+    let result = run_command(cli, runner, &cwd);
     match &result {
         Ok(()) => tracing::debug!(command = command_name, "command complete"),
         Err(error) => {
             tracing::error!(command = command_name, error = %error, "command failed");
+            let (headline, hint) = humanize_error(&error.to_string());
+            ui_error(&headline);
+            if let Some(hint) = hint {
+                ui_hint(&format!("try `{hint}`"));
+            }
             if let Some(path) = trace_log.path() {
                 eprintln!("debug log: {}", path.display());
             }
@@ -571,7 +599,8 @@ fn run(cli: Cli, runner: &impl CommandRunner) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all)]
-fn run_command(cli: Cli, runner: &impl CommandRunner) -> Result<()> {
+fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
+    ensure_jj_repo(runner, cwd).map_err(|error| phase_error("preflight", "jj repo", error))?;
     let config = AppConfig::resolve(runner)
         .map_err(|error| phase_error("resolve-config", "configuration", error))?;
     let diagnostics = Diagnostics {
@@ -784,6 +813,38 @@ fn phase_error(phase: &str, object: impl Display, error: anyhow::Error) -> anyho
     )
 }
 
+/// Turns an internal structured error string (the `phase=… object=… error=…
+/// safe-next-command=…` breadcrumb form used throughout this binary) into a
+/// human-readable headline plus an optional "try this next" hint. The full
+/// structured string is still written to the debug log for support.
+fn humanize_error(raw: &str) -> (String, Option<String>) {
+    let mut message = raw.trim().to_owned();
+
+    // Peel off the trailing `safe-next-command=` hint, if any.
+    let hint = message.rfind("safe-next-command=").map(|idx| {
+        let value = message[idx + "safe-next-command=".len()..]
+            .trim()
+            .trim_matches('`')
+            .trim()
+            .to_owned();
+        message.truncate(idx);
+        value
+    });
+
+    // Unwrap the `phase=/object=/failed-command=/failed-api=` breadcrumb prefixes
+    // down to the innermost human message.
+    let mut headline = message.trim().to_owned();
+    let breadcrumb_keys = ["phase=", "failed-command=", "failed-api="];
+    while breadcrumb_keys.iter().any(|key| headline.starts_with(key)) {
+        match headline.find(" error=") {
+            Some(idx) => headline = headline[idx + " error=".len()..].trim().to_owned(),
+            None => break,
+        }
+    }
+
+    (headline, hint.filter(|value| !value.is_empty()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppContext {
     github: GitHubContext,
@@ -876,6 +937,19 @@ fn parse_bool_config(name: &str, value: &str) -> Result<bool> {
 struct StartupConfigAction {
     key: &'static str,
     value: String,
+}
+
+#[tracing::instrument(skip_all)]
+fn ensure_jj_repo(runner: &impl CommandRunner, cwd: &str) -> Result<()> {
+    let output = runner.run("jj", &["root"])?;
+    if output.success {
+        return Ok(());
+    }
+
+    bail!(
+        "not inside a jj repository (cwd={cwd}); run jj-stack from within your repo, \
+         or initialize one with `jj git init --colocate`"
+    );
 }
 
 #[tracing::instrument(skip_all)]
