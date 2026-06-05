@@ -5797,6 +5797,9 @@ fn markdown_link_label(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
             '\\' | '[' | ']' => {
                 out.push('\\');
                 out.push(ch);
@@ -13415,6 +13418,10 @@ mod tests {
         assert_eq!(
             markdown_link_label(r"fix[parser]\path"),
             r"fix\[parser\]\\path"
+        );
+        assert_eq!(
+            markdown_link_label("<img src=x onerror=alert(1)> & more"),
+            "&lt;img src=x onerror=alert(1)&gt; &amp; more"
         );
         assert_eq!(markdown_link_label("a\nb\tc"), "a b c");
     }
