@@ -1,0 +1,19 @@
+[package]
+name = "jj-stack"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.38", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.140"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+unicode-normalization = "0.1.24"
+tracing = "0.1.44"
+tracing-appender = "0.2.3"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-logfmt = "0.3.7"
+owo-colors = "4.3.0"
+indicatif = { version = "0.18.4", default-features = false }
