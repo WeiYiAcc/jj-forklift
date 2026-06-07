@@ -370,6 +370,35 @@ fn clean_two_pr_merge_fast_forwards_trunk_and_merges_by_reachability() -> anyhow
 }
 
 #[test]
+fn merge_rewritten_local_change_points_to_submit() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-rewritten-local")?;
+    repo.init_main()?;
+    let stack = repo.create_linear_stack(1)?;
+    let branch = branch_for("change-1-title", &stack[0].change_id);
+    repo.seed_pr_number(&branch, 31)?;
+    assert_success("submit", &repo.run(&["submit", "--revset", REVSET])?);
+
+    // Rewrite the local change so its commit moves past what was pushed — the
+    // PR head and the cache still agree on the old commit. This is the user's
+    // "ran sync, didn't submit" case.
+    repo.write_file("change-1.txt", "rewritten contents\n")?;
+
+    let output = repo.run(&["merge", "--revset", REVSET])?;
+    assert!(
+        !output.status.success(),
+        "merge of a rewritten-but-unpushed change must fail"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("your stack was rewritten") && stderr.contains("forklift submit"),
+        "expected a submit-pointing message, stderr:\n{stderr}"
+    );
+    // It must NOT have merged the PR.
+    assert_ne!(repo.stored_pr(31)?["state"], json!("MERGED"));
+    Ok(())
+}
+
+#[test]
 fn merge_auto_tracks_untracked_trunk_before_fast_forward() -> anyhow::Result<()> {
     let repo = TestRepo::new("merge-untracked-trunk")?;
     repo.init_main()?;

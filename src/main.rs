@@ -4379,9 +4379,35 @@ fn validate_pr_ready_for_merge(
             entry.pr_number
         );
     }
+    // The PR's GitHub head, the local jj commit, and our cache must all agree
+    // before merging — otherwise we'd land code that isn't what's checked out.
+    // Disambiguate the three failure shapes so the fix is unambiguous.
     if pr.head_ref_oid != change.commit_id || pr.head_ref_oid != entry.head_sha {
+        if pr.head_ref_oid == entry.head_sha {
+            // PR and cache agree; only the local commit moved. This is the
+            // common case after `sync` rebased the stack without re-pushing.
+            bail!(
+                "local change {} is now {}, but PR #{} (and the cache) are still at {}; your stack was rewritten (e.g. by `forklift sync`) but not pushed — run `forklift submit` before merging",
+                change.change_id,
+                change.commit_id,
+                entry.pr_number,
+                pr.head_ref_oid
+            );
+        }
+        if change.commit_id == entry.head_sha {
+            // Local commit and cache agree; the PR head moved on GitHub. The
+            // branch advanced out-of-band, so refresh local state then re-push.
+            bail!(
+                "PR #{} head is {} on GitHub, but your local change {} and the cache are both at {}; the PR moved out-of-band — run `forklift sync` then `forklift submit` before merging",
+                entry.pr_number,
+                pr.head_ref_oid,
+                change.change_id,
+                change.commit_id
+            );
+        }
+        // All three disagree — local, cache, and GitHub have fully drifted.
         bail!(
-            "PR #{} head is {}, but jj change {} is {} and cache expects {}; run `forklift submit` before merging",
+            "PR #{} is out of sync: GitHub head {}, local change {} is {}, cache expects {}; run `forklift sync` then `forklift submit` before merging",
             entry.pr_number,
             pr.head_ref_oid,
             change.change_id,
