@@ -6020,7 +6020,7 @@ fn stack_comment_body_with_frozen(
     {
         body.push_str(&format!(
             "Check out this stack: `forklift get {}`\n",
-            github_pr_url(&context.github.repo, entry.pr_number)
+            entry.pr_number
         ));
     }
     body.push_str("Pull/update this stack: `forklift sync`\n");
