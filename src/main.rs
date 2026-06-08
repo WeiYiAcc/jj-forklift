@@ -2568,8 +2568,9 @@ impl Diagnostics {
         change: &ResolvedChange,
         action: SubmitPrAction,
         entry: &PrCacheEntry,
+        progress_bar_active: bool,
     ) {
-        if self.dry_run {
+        if self.dry_run || progress_bar_active {
             return;
         }
         ui_progress(
@@ -7490,7 +7491,13 @@ fn submit_stack(
                 refreshed_cache_entry(existing, &plan, previous_comment_id),
             ),
         };
-        diagnostics.submit_pr_action(&context.github.repo, &plan.change, action, &entry);
+        diagnostics.submit_pr_action(
+            &context.github.repo,
+            &plan.change,
+            action,
+            &entry,
+            pr_progress.is_some(),
+        );
         save_submit_cache_entry(
             &mut store,
             &context.github.repo,
