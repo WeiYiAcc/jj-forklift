@@ -321,7 +321,7 @@ fn real_jj_submit_keeps_own_pushed_branch_mutable_after_fetch() -> anyhow::Resul
     repo.init_main()?;
     repo.create_change("change", "change title", "")?;
 
-    let output = repo.run_forklift(&["submit", "--revset", "main..@ & ~empty()"])?;
+    let output = repo.run_forklift(&["submit", "--yes", "--revset", "main..@ & ~empty()"])?;
     assert_success("forklift submit", &output);
 
     repo.fetch_origin()?;
@@ -342,7 +342,7 @@ fn real_jj_submit_updates_existing_pr_after_edit() -> anyhow::Result<()> {
     repo.init_main()?;
     let original = repo.create_change("change", "change title", "")?;
 
-    let output = repo.run_forklift(&["submit", "--revset", "main..@ & ~empty()"])?;
+    let output = repo.run_forklift(&["submit", "--yes", "--revset", "main..@ & ~empty()"])?;
     assert_success("initial forklift submit", &output);
 
     fs::write(
@@ -353,7 +353,7 @@ fn real_jj_submit_updates_existing_pr_after_edit() -> anyhow::Result<()> {
     let edited = repo.change_at("@")?;
     assert_ne!(edited.commit_id, original.commit_id);
 
-    let output = repo.run_forklift(&["submit", "--revset", "main..@ & ~empty()"])?;
+    let output = repo.run_forklift(&["submit", "--yes", "--revset", "main..@ & ~empty()"])?;
     assert_success("updated forklift submit", &output);
 
     let local_after_submit = repo.change_at("@")?;

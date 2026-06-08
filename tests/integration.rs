@@ -26,12 +26,11 @@ fn one_change_submit_creates_pr() -> anyhow::Result<()> {
     let branch = branch_for("change-title", &change.change_id);
     repo.seed_pr_number(&branch, 9)?;
 
-    let output = repo.run(&["submit", "--revset", REVSET])?;
+    let output = repo.run(&["submit", "--yes", "--revset", REVSET])?;
     assert_success("submit", &output);
     assert!(
-        stderr_of(&output).contains(
-            "Submitted PR #9 https://github.com/owner/repo/pull/9 - action: submit - change title"
-        ),
+        stderr_of(&output)
+            .contains("Submitted PR #9 https://github.com/owner/repo/pull/9 - change title"),
         "stderr:\n{}",
         stderr_of(&output)
     );
@@ -48,6 +47,46 @@ fn one_change_submit_creates_pr() -> anyhow::Result<()> {
     assert!(
         repo.cache_path().exists(),
         "submit should save SQLite cache"
+    );
+    Ok(())
+}
+
+#[test]
+fn submit_requires_confirmation_before_mutation() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-confirm")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+
+    let output = repo.run(&["submit", "--revset", REVSET])?;
+    assert!(
+        !output.status.success(),
+        "non-interactive submit should require confirmation"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains(&format!(
+            "actions:\n  1. create new PR `change title`: push origin/{branch} @ {}, base main",
+            &change.commit_id[..8]
+        )) && stderr.contains("2. sync stack comments for submitted stack")
+            && stderr.contains("------------------------------------------------------------"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error: submit requires confirmation"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("resolution:\n  rerun with `forklift submit --yes`"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?,
+        "submit must not create a PR before confirmation"
+    );
+    assert!(
+        !repo.cache_path().exists(),
+        "submit must not write cache before confirmation"
     );
     Ok(())
 }
@@ -119,7 +158,7 @@ fn two_change_submit_uses_parent_head_branch_base() -> anyhow::Result<()> {
     repo.seed_pr_number(&bottom, 11)?;
     repo.seed_pr_number(&top, 12)?;
 
-    let output = repo.run(&["submit", "--revset", REVSET])?;
+    let output = repo.run(&["submit", "--yes", "--revset", REVSET])?;
     assert_success("submit", &output);
 
     let top_pr = repo.stored_pr(12)?;
@@ -144,7 +183,7 @@ fn two_change_update_keeps_top_pr_based_on_bottom_branch() -> anyhow::Result<()>
     repo.seed_pr_number(&top, 12)?;
     assert_success(
         "initial submit",
-        &repo.run(&["submit", "--revset", REVSET])?,
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
     );
 
     // Edit the bottom change's title; this rewrites it and rebases the top.
@@ -160,19 +199,18 @@ fn two_change_update_keeps_top_pr_based_on_bottom_branch() -> anyhow::Result<()>
     let bottom_after = repo.change_at(&stack[0].change_id)?;
     let top_after = repo.change_at(&stack[1].change_id)?;
 
-    let output = repo.run(&["submit", "--revset", REVSET])?;
+    let output = repo.run(&["submit", "--yes", "--revset", REVSET])?;
     assert_success("update submit", &output);
     assert!(
         stderr_of(&output).contains(
-            "Updated PR #11 https://github.com/owner/repo/pull/11 - action: update - change 1 title edited"
+            "Updated PR #11 https://github.com/owner/repo/pull/11 - change 1 title edited"
         ),
         "stderr:\n{}",
         stderr_of(&output)
     );
     assert!(
-        stderr_of(&output).contains(
-            "Updated PR #12 https://github.com/owner/repo/pull/12 - action: update - change 2 title"
-        ),
+        stderr_of(&output)
+            .contains("Updated PR #12 https://github.com/owner/repo/pull/12 - change 2 title"),
         "stderr:\n{}",
         stderr_of(&output)
     );
@@ -201,17 +239,16 @@ fn noop_submit_skips_push_and_pr_mutation() -> anyhow::Result<()> {
     repo.seed_pr_number(&branch, 9)?;
     assert_success(
         "initial submit",
-        &repo.run(&["submit", "--revset", REVSET])?,
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
     );
     let pushed = repo.git_remote_branch_target(&branch)?;
 
     repo.clear_gh_requests()?;
-    let output = repo.run(&["submit", "--revset", REVSET])?;
+    let output = repo.run(&["submit", "--yes", "--revset", REVSET])?;
     assert_success("noop submit", &output);
     assert!(
-        stderr_of(&output).contains(
-            "Nothing PR #9 https://github.com/owner/repo/pull/9 - action: nothing - change title"
-        ),
+        stderr_of(&output)
+            .contains("Nothing PR #9 https://github.com/owner/repo/pull/9 - change title"),
         "stderr:\n{}",
         stderr_of(&output)
     );
@@ -233,7 +270,7 @@ fn submit_updates_existing_pr_from_tracked_bookmark_without_cache() -> anyhow::R
     repo.seed_pr_number(&branch, 9)?;
     assert_success(
         "initial submit",
-        &repo.run(&["submit", "--revset", REVSET])?,
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
     );
 
     // Drop the cache; submit must rediscover the PR from the tracked bookmark.
@@ -243,7 +280,10 @@ fn submit_updates_existing_pr_from_tracked_bookmark_without_cache() -> anyhow::R
     let edited = repo.change_at("@")?;
 
     repo.clear_gh_requests()?;
-    assert_success("update submit", &repo.run(&["submit", "--revset", REVSET])?);
+    assert_success(
+        "update submit",
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
+    );
 
     let prs = repo.stored_prs()?;
     assert_eq!(
@@ -271,7 +311,7 @@ fn submit_refuses_open_branch_pr_without_local_bookmark() -> anyhow::Result<()> 
     // A PR exists for the branch, but there is no local tracked bookmark/cache.
     repo.seed_pr(9, &branch, "main", "change title", "old body")?;
 
-    let output = repo.run(&["submit", "--revset", REVSET])?;
+    let output = repo.run(&["submit", "--yes", "--revset", REVSET])?;
     assert!(
         !output.status.success(),
         "submit without a local bookmark should fail"
@@ -330,7 +370,10 @@ fn merge_dry_run_checks_without_mutating() -> anyhow::Result<()> {
     let change = repo.create_change("change", "change title", "change body")?;
     let branch = branch_for("change-title", &change.change_id);
     repo.seed_pr_number(&branch, 9)?;
-    assert_success("submit", &repo.run(&["submit", "--revset", REVSET])?);
+    assert_success(
+        "submit",
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
+    );
 
     repo.clear_gh_requests()?;
     let output = repo.run(&["merge", "--dry-run", "--revset", REVSET])?;
@@ -353,7 +396,10 @@ fn merge_dry_run_discovers_pr_without_cache() -> anyhow::Result<()> {
     let change = repo.create_change("change", "change title", "change body")?;
     let branch = branch_for("change-title", &change.change_id);
     repo.seed_pr_number(&branch, 9)?;
-    assert_success("submit", &repo.run(&["submit", "--revset", REVSET])?);
+    assert_success(
+        "submit",
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
+    );
 
     repo.delete_cache()?;
     repo.clear_gh_requests()?;
@@ -375,7 +421,10 @@ fn clean_two_pr_merge_fast_forwards_trunk_and_merges_by_reachability() -> anyhow
     let top = branch_for("change-2-title", &stack[1].change_id);
     repo.seed_pr_number(&bottom, 11)?;
     repo.seed_pr_number(&top, 12)?;
-    assert_success("submit", &repo.run(&["submit", "--revset", REVSET])?);
+    assert_success(
+        "submit",
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
+    );
     let top_commit = repo.change_at(&stack[1].change_id)?.commit_id;
 
     repo.clear_gh_requests()?;
@@ -450,7 +499,10 @@ fn merge_rewritten_local_change_points_to_submit() -> anyhow::Result<()> {
     let stack = repo.create_linear_stack(1)?;
     let branch = branch_for("change-1-title", &stack[0].change_id);
     repo.seed_pr_number(&branch, 31)?;
-    assert_success("submit", &repo.run(&["submit", "--revset", REVSET])?);
+    assert_success(
+        "submit",
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
+    );
 
     // Rewrite the local change so its commit moves past what was pushed — the
     // PR head and the cache still agree on the old commit. This is the user's
@@ -479,7 +531,10 @@ fn merge_auto_tracks_untracked_trunk_before_fast_forward() -> anyhow::Result<()>
     let stack = repo.create_linear_stack(1)?;
     let branch = branch_for("change-1-title", &stack[0].change_id);
     repo.seed_pr_number(&branch, 21)?;
-    assert_success("submit", &repo.run(&["submit", "--revset", REVSET])?);
+    assert_success(
+        "submit",
+        &repo.run(&["submit", "--yes", "--revset", REVSET])?,
+    );
     let top_commit = repo.change_at(&stack[0].change_id)?.commit_id;
 
     // Reproduce the user's broken state: a non-tracking `main@origin`. Without
@@ -511,7 +566,7 @@ fn sync_rebases_then_submits() -> anyhow::Result<()> {
     let branch = branch_for("change-title", &change.change_id);
     repo.seed_pr_number(&branch, 9)?;
 
-    let output = repo.run(&["sync", "--submit", "--revset", REVSET])?;
+    let output = repo.run(&["sync", "--submit", "--yes", "--revset", REVSET])?;
     assert_success("sync --submit", &output);
 
     // The change was rebased onto the advanced remote trunk.

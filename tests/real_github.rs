@@ -239,7 +239,7 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
     let bottom = repo.create_change("bottom", "bottom title")?;
     let top = repo.create_change("top", "top title")?;
 
-    let output = repo.run_forklift(&["submit", "--revset", STACK_REVSET])?;
+    let output = repo.run_forklift(&["submit", "--yes", "--revset", STACK_REVSET])?;
     assert_success("initial forklift submit", &output);
 
     let initial = repo.wait_for_open_prs(2)?;
@@ -250,7 +250,7 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
 
     repo.edit_change(&bottom, "bottom", "bottom title edited")?;
     repo.edit_top(&top)?;
-    let output = repo.run_forklift(&["submit", "--revset", STACK_REVSET])?;
+    let output = repo.run_forklift(&["submit", "--yes", "--revset", STACK_REVSET])?;
     assert_success("updated forklift submit", &output);
 
     let updated = repo.wait_for_open_prs(2)?;

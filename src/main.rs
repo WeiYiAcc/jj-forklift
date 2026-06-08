@@ -382,7 +382,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Submit(StackOptions),
+    Submit(SubmitOptions),
     Sync(SyncOptions),
     Merge(MergeOptions),
     Get(GetOptions),
@@ -415,6 +415,16 @@ struct StackOptions {
 }
 
 #[derive(Debug, Args)]
+struct SubmitOptions {
+    #[command(flatten)]
+    stack: StackOptions,
+
+    /// Apply submit without prompting for confirmation.
+    #[arg(short, long)]
+    yes: bool,
+}
+
+#[derive(Debug, Args)]
 struct SyncOptions {
     #[command(flatten)]
     stack: StackOptions,
@@ -422,6 +432,10 @@ struct SyncOptions {
     /// Also run submit after syncing. Sync does not submit by default.
     #[arg(long)]
     submit: bool,
+
+    /// Apply submit without prompting for confirmation when --submit is used.
+    #[arg(short, long)]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -650,13 +664,20 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
 
     match cli.command {
         Commands::Submit(options) => {
-            let context = resolve_stack_context(runner, &options.revset)
-                .map_err(|error| phase_error("resolve-stack", &options.revset, error))?;
+            let context = resolve_stack_context(runner, &options.stack.revset)
+                .map_err(|error| phase_error("resolve-stack", &options.stack.revset, error))?;
             if cli.verbose {
                 print_github_context(&context.github);
                 print_stack(&context.stack);
             }
-            let summary = submit_stack(runner, &config, &context, diagnostics)?;
+            let summary = submit_stack(
+                runner,
+                &config,
+                &context,
+                options.yes,
+                "forklift submit --yes",
+                diagnostics,
+            )?;
             if cli.verbose {
                 eprintln!(
                     "submit: {} pushed, {} created, {} updated, {} unchanged, {} comments created, {} comments updated, {} comments unchanged",
@@ -699,6 +720,7 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
                 &config,
                 &options.stack.revset,
                 options.submit,
+                options.yes,
                 diagnostics,
             )?;
             if cli.dry_run {
@@ -2024,14 +2046,6 @@ enum SubmitPrAction {
 }
 
 impl SubmitPrAction {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Submit => "submit",
-            Self::Update => "update",
-            Self::Nothing => "nothing",
-        }
-    }
-
     fn progress_verb(self) -> &'static str {
         match self {
             Self::Submit => "Submitted",
@@ -2206,10 +2220,9 @@ impl Diagnostics {
         ui_progress(
             action.progress_verb(),
             &format!(
-                "PR #{} {} - action: {} - {}",
+                "PR #{} {} - {}",
                 entry.pr_number,
                 github_pr_url(repo, entry.pr_number),
-                action.label(),
                 change.title
             ),
         );
@@ -2580,6 +2593,137 @@ fn repair_pr_list(numbers: &[u64]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+fn print_submit_action_plan(config: &AppConfig, plans: &[SubmitPlan]) {
+    render_submit_action_plan(config, plans, print_submit_plan_line);
+}
+
+fn render_submit_action_plan(config: &AppConfig, plans: &[SubmitPlan], mut emit: impl FnMut(&str)) {
+    emit("");
+    emit("actions:");
+    for (index, plan) in plans.iter().enumerate() {
+        emit(&format!(
+            "  {}. {}",
+            index + 1,
+            submit_action_description(config, plan)
+        ));
+    }
+    if !plans.is_empty() {
+        emit(&format!(
+            "  {}. sync stack comments for submitted stack",
+            plans.len() + 1
+        ));
+    }
+    emit("");
+    emit("------------------------------------------------------------");
+}
+
+fn submit_action_description(config: &AppConfig, plan: &SubmitPlan) -> String {
+    let remote_branch = format!("{}/{}", config.remote, plan.head_branch);
+    let commit = short_commit_id(&plan.change.commit_id);
+    let branch_detail = if plan.push_needed {
+        format!("push {remote_branch} @ {commit}")
+    } else {
+        format!("{remote_branch} @ {commit}")
+    };
+
+    match &plan.existing_pr {
+        None => format!(
+            "create new PR `{}`: {}, base {}",
+            plan.change.title, branch_detail, plan.base_branch
+        ),
+        Some(existing) if plan.pr_update_needed => format!(
+            "update PR #{} `{}`: {}, base {}",
+            existing.pr_number, plan.change.title, branch_detail, plan.base_branch
+        ),
+        Some(existing) => format!(
+            "unchanged PR #{} `{}`: {}",
+            existing.pr_number, plan.change.title, branch_detail
+        ),
+    }
+}
+
+fn short_commit_id(commit_id: &str) -> &str {
+    commit_id.get(..8).unwrap_or(commit_id)
+}
+
+fn confirm_submit_stack(yes: bool, yes_command: &str) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(CliError::new("submit requires confirmation")
+            .reason("submit would update GitHub branches, PRs, or stack comments, but stdin is not a terminal")
+            .resolution(format!("rerun with `{yes_command}`"))
+            .into());
+    }
+
+    eprint!("Apply submit? [y/N] ");
+    io::stderr()
+        .flush()
+        .context("flush submit confirmation prompt")?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("read submit confirmation")?;
+    if matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+        return Ok(());
+    }
+
+    Err(CliError::new("submit cancelled")
+        .reason("user declined to apply the submit plan")
+        .resolution(format!("rerun with `{yes_command}`"))
+        .into())
+}
+
+fn print_submit_plan_line(line: &str) {
+    if ui_color_enabled() {
+        if let Some((label, rest)) = line.split_once(':') {
+            if label.trim() == "actions" {
+                eprintln!("{}:{rest}", label.cyan().bold());
+                return;
+            }
+        }
+        if let Some(line) = color_submit_action_line(line) {
+            eprintln!("{line}");
+            return;
+        }
+    }
+    eprintln!("{line}");
+}
+
+fn color_submit_action_line(line: &str) -> Option<String> {
+    let after_number = line.trim_start().split_once(". ")?.1;
+    let action_end = submit_action_label_end(after_number)?;
+    let prefix_len = line.len() - after_number.len();
+    let prefix = &line[..prefix_len];
+    let action = &after_number[..action_end];
+    let rest = &after_number[action_end..];
+    let colored = match action {
+        action if action.starts_with("unchanged") => action.dimmed().to_string(),
+        action if action.starts_with("create") => action.green().to_string(),
+        action if action.starts_with("update") => action.yellow().to_string(),
+        action if action.starts_with("sync") => action.cyan().to_string(),
+        action if action.starts_with("close") || action.starts_with("delete") => {
+            action.red().to_string()
+        }
+        _ => return None,
+    };
+    Some(format!("{prefix}{colored}{rest}"))
+}
+
+fn submit_action_label_end(action_line: &str) -> Option<usize> {
+    if action_line.starts_with("create new PR") {
+        return Some("create new PR".len());
+    }
+    for marker in [" PR #", " stack comments"] {
+        if let Some(index) = action_line.find(marker) {
+            return Some(index);
+        }
+    }
+    action_line.find(':')
 }
 
 fn print_repair_plan_line(line: &str) {
@@ -4751,7 +4895,14 @@ fn refresh_stack_above_merge(
 
     diagnostics.phase("merge-refresh-above");
     let context = resolve_stack_context(runner, revset)?;
-    submit_stack(runner, config, &context, diagnostics)?;
+    submit_stack(
+        runner,
+        config,
+        &context,
+        true,
+        "forklift submit --yes",
+        diagnostics,
+    )?;
     Ok(())
 }
 
@@ -5203,6 +5354,7 @@ fn sync_stack(
     config: &AppConfig,
     revset: &str,
     submit: bool,
+    yes: bool,
     diagnostics: Diagnostics,
 ) -> Result<SyncSummary> {
     diagnostics.phase("sync-fetch");
@@ -5302,8 +5454,15 @@ fn sync_stack(
         print_github_context(&context.github);
         print_stack(&context.stack);
     }
-    submit_stack(runner, config, &context, diagnostics)
-        .map_err(|error| phase_error("sync-submit", "submit", error))?;
+    submit_stack(
+        runner,
+        config,
+        &context,
+        yes,
+        "forklift sync --submit --yes",
+        diagnostics,
+    )
+    .map_err(|error| phase_error("sync-submit", "submit", error))?;
 
     Ok(SyncSummary {
         rebased_roots,
@@ -6320,6 +6479,8 @@ fn submit_stack(
     runner: &impl CommandRunner,
     config: &AppConfig,
     context: &AppContext,
+    yes: bool,
+    yes_command: &str,
     diagnostics: Diagnostics,
 ) -> Result<SubmitSummary> {
     diagnostics.phase("validate-submit-bases");
@@ -6416,6 +6577,8 @@ fn submit_stack(
         );
         return Ok(summary);
     }
+    print_submit_action_plan(config, &plans);
+    confirm_submit_stack(yes, yes_command)?;
 
     diagnostics.phase("push-refs");
     push_changed_heads(runner, config, &plans, diagnostics)?;

@@ -72,9 +72,9 @@ fn run_submit_actions_scenario() -> Result<()> {
 
     eprintln!("forklift-ui-mock: submit-actions");
     eprintln!("fixture: {}", fixture.root.display());
-    eprintln!("running: forklift submit");
+    eprintln!("running: forklift submit --yes");
 
-    let status = fixture.run_forklift(["submit"])?;
+    let status = fixture.run_forklift(["submit", "--yes"])?;
     if !status.success() {
         bail!("scenario `submit-actions` failed with status {status}");
     }
@@ -112,9 +112,9 @@ fn run_sync_submit_scenario() -> Result<()> {
 
     eprintln!("forklift-ui-mock: sync-submit");
     eprintln!("fixture: {}", fixture.root.display());
-    eprintln!("running: forklift sync --submit");
+    eprintln!("running: forklift sync --submit --yes");
 
-    let status = fixture.run_forklift(["sync", "--submit"])?;
+    let status = fixture.run_forklift(["sync", "--submit", "--yes"])?;
     if !status.success() {
         bail!("scenario `sync-submit` failed with status {status}");
     }
