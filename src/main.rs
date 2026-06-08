@@ -2569,20 +2569,27 @@ impl Diagnostics {
         change: &ResolvedChange,
         action: SubmitPrAction,
         entry: &PrCacheEntry,
-        progress_bar_active: bool,
+        progress: Option<&ProgressBar>,
     ) {
-        if self.dry_run || progress_bar_active {
+        if self.dry_run {
             return;
         }
-        ui_progress(
-            action.progress_verb(),
-            &format!(
-                "PR #{} {} - {}",
-                entry.pr_number,
-                github_pr_url(repo, entry.pr_number),
-                change.title
-            ),
-        );
+        let line = || {
+            ui_progress(
+                action.progress_verb(),
+                &format!(
+                    "PR #{} {} - {}",
+                    entry.pr_number,
+                    github_pr_url(repo, entry.pr_number),
+                    change.title
+                ),
+            );
+        };
+        if let Some(progress) = progress {
+            progress.suspend(line);
+        } else {
+            line();
+        }
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -7533,7 +7540,7 @@ fn submit_stack(
             &plan.change,
             action,
             &entry,
-            pr_progress.is_some(),
+            pr_progress.as_ref(),
         );
         save_submit_cache_entry(
             &mut store,
