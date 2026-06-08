@@ -7479,7 +7479,7 @@ fn submit_stack(
     print_submit_action_plan(config, &plans);
     confirm_submit_stack(yes, yes_command)?;
 
-    diagnostics.phase("push-refs");
+    tracing::debug!(phase = "push-refs", "recovery phase");
     push_changed_heads(runner, config, &plans, diagnostics)?;
 
     let mut entries = Vec::new();
@@ -7535,7 +7535,7 @@ fn submit_stack(
         ui_finish_progress_bar(progress);
     }
 
-    diagnostics.phase("stack-comments");
+    tracing::debug!(phase = "stack-comments", "recovery phase");
     let comment_entries = entries
         .iter()
         .map(|(change, entry)| (change.change_id.clone(), entry.clone()))
