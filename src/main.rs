@@ -8,7 +8,7 @@ use std::process;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -348,7 +348,7 @@ const STACK_RECORD_SEPARATOR: char = '\x1e';
 const STACK_LOG_TEMPLATE: &str = "json(change_id) ++ \"\\x1f\" ++ json(commit_id) ++ \"\\x1f\" ++ json(parents.map(|c| c.commit_id())) ++ \"\\x1f\" ++ json(description.first_line()) ++ \"\\x1f\" ++ json(description) ++ \"\\x1f\" ++ json(empty) ++ \"\\x1f\" ++ json(conflict) ++ \"\\x1e\"";
 const PR_JSON_FIELDS: &str = "number,state,headRefName,baseRefName,headRefOid,baseRefOid,title,body,createdAt,id,author,headRepository";
 const MERGE_PR_JSON_FIELDS: &str = "number,state,headRefName,baseRefName,headRefOid,baseRefOid,title,body,createdAt,isDraft,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,autoMergeRequest";
-const PR_API_JQ: &str = "{number,state,headRefName:.head.ref,baseRefName:.base.ref,headRefOid:.head.sha,baseRefOid:.base.sha,title,body,createdAt:.created_at,id:.node_id,headRepository:{id:(.head.repo.id|tostring),node_id:.head.repo.node_id,nameWithOwner:.head.repo.full_name},baseRepository:{id:(.base.repo.id|tostring),node_id:.base.repo.node_id,nameWithOwner:.base.repo.full_name},author:{login:.user.login}}";
+const PR_API_JQ: &str = "{number,state,merged,headRefName:.head.ref,baseRefName:.base.ref,headRefOid:.head.sha,baseRefOid:.base.sha,title,body,createdAt:.created_at,id:.node_id,headRepository:{id:(.head.repo.id|tostring),node_id:.head.repo.node_id,nameWithOwner:.head.repo.full_name},baseRepository:{id:(.base.repo.id|tostring),node_id:.base.repo.node_id,nameWithOwner:.base.repo.full_name},author:{login:.user.login}}";
 const STACK_COMMENT_MARKER: &str = "<!-- stack:v1 -->";
 const STACK_COMMENT_JQ: &str =
     ".[] | {id,body,userLogin:.user.login,updatedAt:.updated_at} | @json";
@@ -386,6 +386,7 @@ enum Commands {
     Sync(SyncOptions),
     Merge(MergeOptions),
     Get(GetOptions),
+    Repair(RepairOptions),
     Unfreeze(UnfreezeOptions),
     Status(StatusOptions),
     /// Open a pull request in your browser.
@@ -399,6 +400,7 @@ impl Commands {
             Self::Sync(_) => "sync",
             Self::Merge(_) => "merge",
             Self::Get(_) => "get",
+            Self::Repair(_) => "repair",
             Self::Unfreeze(_) => "unfreeze",
             Self::Status(_) => "status",
             Self::Pr(_) => "pr",
@@ -443,6 +445,15 @@ struct MergeOptions {
 #[derive(Debug, Args)]
 struct GetOptions {
     target: String,
+}
+
+#[derive(Debug, Args)]
+struct RepairOptions {
+    target: String,
+
+    /// Apply the repair without prompting for confirmation.
+    #[arg(short, long)]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -774,6 +785,27 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
                     &format!(
                         "get — {} PRs fetched, {} cache entries written",
                         summary.prs, summary.cache_entries
+                    ),
+                );
+            }
+        }
+        Commands::Repair(options) => {
+            let summary =
+                repair_stack_comments(runner, &config, &options.target, options.yes, diagnostics)?;
+            if cli.dry_run {
+                ui_progress(
+                    "Finished",
+                    &format!(
+                        "repair (dry run) — {} open PRs, {} merged PRs to prune, {} comments planned",
+                        summary.open_prs, summary.pruned_merged_prs, summary.comments_changed
+                    ),
+                );
+            } else {
+                ui_progress(
+                    "Finished",
+                    &format!(
+                        "repair — {} open PRs, {} merged PRs pruned, {} comments changed",
+                        summary.open_prs, summary.pruned_merged_prs, summary.comments_changed
                     ),
                 );
             }
@@ -2016,6 +2048,43 @@ struct GetSummary {
     cache_entries: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RepairSummary {
+    open_prs: usize,
+    pruned_merged_prs: usize,
+    comments_changed: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RepairPlan {
+    open_prs: Vec<GhPr>,
+    pruned_merged_prs: Vec<u64>,
+}
+
+#[derive(Debug, Clone)]
+enum RepairAction {
+    UpsertStackComment {
+        pr_number: u64,
+        removed_prs: Vec<u64>,
+        body: String,
+    },
+}
+
+impl RepairAction {
+    fn describe(&self) -> String {
+        match self {
+            Self::UpsertStackComment {
+                pr_number,
+                removed_prs,
+                ..
+            } => {
+                let removed = repair_pr_list(removed_prs);
+                format!("update stack comment on PR #{pr_number} to remove {removed}")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct StatusReport {
     repo: String,
@@ -2322,6 +2391,319 @@ fn get_stack(
         fetched_branches: pr_count,
         cache_entries: cache_entries,
     })
+}
+
+#[tracing::instrument(skip_all, fields(target = target))]
+fn repair_stack_comments(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    target: &str,
+    yes: bool,
+    diagnostics: Diagnostics,
+) -> Result<RepairSummary> {
+    diagnostics.phase("resolve-github");
+    let mut github = GitHubContext::resolve(runner)
+        .map_err(|error| phase_error("resolve-github", "github", error))?;
+    let target = parse_get_target(target, &github.repo)?;
+    github.repo = target.repo().to_owned();
+
+    diagnostics.phase("resolve-stack-comment");
+    let target_pr = resolve_get_target_pr(runner, &github, target)?;
+    if !target_pr.state.eq_ignore_ascii_case("OPEN") {
+        bail!(
+            "repair target PR #{} is {}; choose an open PR whose stack comment should be repaired",
+            target_pr.number,
+            target_pr.state
+        );
+    }
+    let comment = latest_stack_comment(runner, &github, target_pr.number, "repair")?;
+    let mut pr_numbers = comment
+        .as_ref()
+        .map(|comment| parse_stack_pr_numbers(&comment.body))
+        .unwrap_or_default();
+    pr_numbers.reverse();
+    if pr_numbers.is_empty() {
+        pr_numbers.push(target_pr.number);
+    }
+    if !pr_numbers.contains(&target_pr.number) {
+        bail!(
+            "stack comment for PR #{} did not include the target PR",
+            target_pr.number
+        );
+    }
+
+    diagnostics.phase("resolve-prs");
+    let plan = plan_stack_comment_repair(runner, config, &github, target_pr.number, pr_numbers)?;
+    let actions = repair_actions(&github, config, &plan);
+    print_repair_action_plan(&plan, &actions, diagnostics);
+
+    let mut summary = RepairSummary {
+        open_prs: plan.open_prs.len(),
+        pruned_merged_prs: plan.pruned_merged_prs.len(),
+        comments_changed: 0,
+    };
+    if diagnostics.dry_run {
+        summary.comments_changed = actions.len();
+        return Ok(summary);
+    }
+    if actions.is_empty() {
+        return Ok(summary);
+    }
+    confirm_repair_stack_comments(&plan, &actions, target_pr.number, yes)?;
+
+    diagnostics.phase("stack-comments");
+    for action in &actions {
+        if execute_repair_action(runner, &github, action, diagnostics)? {
+            summary.comments_changed += 1;
+        }
+    }
+
+    diagnostics.phase("repair-validate");
+    validate_repair_result(runner, config, &github, target_pr.number, &plan)?;
+
+    Ok(summary)
+}
+
+#[tracing::instrument(skip_all)]
+fn repair_actions(
+    github: &GitHubContext,
+    config: &AppConfig,
+    plan: &RepairPlan,
+) -> Vec<RepairAction> {
+    if plan.pruned_merged_prs.is_empty() {
+        return Vec::new();
+    }
+
+    plan.open_prs
+        .iter()
+        .map(|pr| RepairAction::UpsertStackComment {
+            pr_number: pr.number,
+            removed_prs: plan.pruned_merged_prs.clone(),
+            body: repaired_stack_comment_body(github, &plan.open_prs, pr.number, &config.trunk),
+        })
+        .collect()
+}
+
+#[tracing::instrument(skip_all)]
+fn print_repair_action_plan(plan: &RepairPlan, actions: &[RepairAction], diagnostics: Diagnostics) {
+    render_repair_action_plan(plan, actions, |line| diagnostics.plan_line(line));
+}
+
+fn render_repair_action_plan(
+    plan: &RepairPlan,
+    actions: &[RepairAction],
+    mut emit: impl FnMut(&str),
+) {
+    let pruned = repair_pr_list(&plan.pruned_merged_prs);
+
+    emit("");
+    emit("problems:");
+    emit(&format!(
+        "  merged PRs still listed in stack comment: {pruned}"
+    ));
+    emit("");
+    emit("actions:");
+    if actions.is_empty() {
+        emit("  <none>");
+    } else {
+        for (index, action) in actions.iter().enumerate() {
+            emit(&format!("  {}. {}", index + 1, action.describe()));
+        }
+        emit(&format!(
+            "  {}. revalidate repaired stack comment topology",
+            actions.len() + 1
+        ));
+    }
+}
+
+fn repair_pr_list(numbers: &[u64]) -> String {
+    if numbers.is_empty() {
+        "<none>".to_owned()
+    } else {
+        numbers
+            .iter()
+            .map(|number| format!("#{number}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn print_repair_plan_line(line: &str) {
+    if ui_color_enabled() {
+        if let Some((label, rest)) = line.split_once(':') {
+            match label.trim() {
+                "problems" => {
+                    eprintln!("{}:{rest}", label.red().bold());
+                    return;
+                }
+                "actions" => {
+                    eprintln!("{}:{rest}", label.cyan().bold());
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+    eprintln!("{line}");
+}
+
+#[tracing::instrument(skip_all)]
+fn execute_repair_action(
+    runner: &impl CommandRunner,
+    github: &GitHubContext,
+    action: &RepairAction,
+    diagnostics: Diagnostics,
+) -> Result<bool> {
+    match action {
+        RepairAction::UpsertStackComment {
+            pr_number, body, ..
+        } => match upsert_stack_comment(runner, github, *pr_number, "repair", body, diagnostics)? {
+            StackCommentAction::Created(_) | StackCommentAction::Updated(_, _) => Ok(true),
+            StackCommentAction::Unchanged(_) => Ok(false),
+        },
+    }
+}
+
+#[tracing::instrument(skip_all)]
+fn confirm_repair_stack_comments(
+    plan: &RepairPlan,
+    actions: &[RepairAction],
+    target_pr_number: u64,
+    yes: bool,
+) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    render_repair_action_plan(plan, actions, |line| print_repair_plan_line(line));
+    eprintln!();
+    if !io::stdin().is_terminal() {
+        return Err(anyhow::Error::new(
+            CliError::new("repair requires confirmation")
+                .reason("repair would update GitHub stack comments, but stdin is not a terminal")
+                .resolution(format!(
+                    "rerun with `forklift repair {target_pr_number} --yes`"
+                ))
+                .detail("target", format!("#{target_pr_number}"))
+                .detail("comments", plan.open_prs.len()),
+        ));
+    }
+    eprint!("Apply repair? [y/N] ");
+    io::stderr()
+        .flush()
+        .context("flush repair confirmation prompt")?;
+
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("read repair confirmation")?;
+    if matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+        Ok(())
+    } else {
+        Err(anyhow::Error::new(
+            CliError::new("repair cancelled")
+                .reason("confirmation was not accepted")
+                .resolution(format!(
+                    "rerun with `forklift repair {target_pr_number} --yes`"
+                )),
+        ))
+    }
+}
+
+#[tracing::instrument(skip_all)]
+fn validate_repair_result(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    github: &GitHubContext,
+    target_pr_number: u64,
+    plan: &RepairPlan,
+) -> Result<()> {
+    let comment = latest_stack_comment(runner, github, target_pr_number, "repair-validate")?
+        .with_context(|| format!("repaired PR #{target_pr_number} has no stack comment"))?;
+    let mut pr_numbers = parse_stack_pr_numbers(&comment.body);
+    pr_numbers.reverse();
+    let validation_plan =
+        plan_stack_comment_repair(runner, config, github, target_pr_number, pr_numbers)
+            .context("re-run repair detection on repaired stack comment")?;
+    if !validation_plan.pruned_merged_prs.is_empty() {
+        bail!(
+            "repair validation failed: repaired stack comment still lists merged PR(s): {}",
+            repair_pr_list(&validation_plan.pruned_merged_prs)
+        );
+    }
+
+    let expected = plan.open_prs.iter().map(|pr| pr.number).collect::<Vec<_>>();
+    let actual = validation_plan
+        .open_prs
+        .iter()
+        .map(|pr| pr.number)
+        .collect::<Vec<_>>();
+    if actual != expected {
+        bail!(
+            "repair validation failed: stack comment lists {:?}, expected {:?}",
+            actual,
+            expected,
+        );
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+fn plan_stack_comment_repair(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    github: &GitHubContext,
+    target_pr_number: u64,
+    pr_numbers: Vec<u64>,
+) -> Result<RepairPlan> {
+    let mut seen = HashSet::new();
+    let mut open_prs = Vec::new();
+    let mut pruned_merged_prs = Vec::new();
+    for pr_number in pr_numbers {
+        if !seen.insert(pr_number) {
+            bail!("stack comment listed PR #{} more than once", pr_number);
+        }
+        let pr = fetch_pr_by_number(runner, github, "repair", pr_number)?;
+        validate_get_pr_metadata(github, &pr)?;
+        if pr.state.eq_ignore_ascii_case("OPEN") {
+            open_prs.push(pr);
+        } else if pr_was_merged(&pr) {
+            pruned_merged_prs.push(pr.number);
+        } else {
+            return Err(anyhow::Error::new(
+                CliError::new("cannot repair stack comment automatically")
+                    .reason(format!(
+                        "PR #{} is {} but not merged",
+                        pr.number, pr.state
+                    ))
+                    .resolution(format!(
+                        "reopen or merge PR #{}, or remove it from the stack comment manually, then run `forklift repair {target_pr_number}`",
+                        pr.number
+                    ))
+                    .detail("target", format!("#{target_pr_number}"))
+                    .detail("pr", format!("#{}", pr.number))
+                    .detail("state", &pr.state),
+            ));
+        }
+    }
+
+    if !open_prs.iter().any(|pr| pr.number == target_pr_number) {
+        bail!(
+            "repair would remove target PR #{}; choose an open PR still in the stack",
+            target_pr_number
+        );
+    }
+    validate_get_pr_stack(config, github, target_pr_number, &open_prs)?;
+
+    Ok(RepairPlan {
+        open_prs,
+        pruned_merged_prs,
+    })
+}
+
+#[tracing::instrument(level = "trace", skip_all, fields(pr = pr.number))]
+fn pr_was_merged(pr: &GhPr) -> bool {
+    pr.merged || pr.state.eq_ignore_ascii_case("MERGED")
 }
 
 #[tracing::instrument(skip_all, fields(target = target))]
@@ -6254,6 +6636,75 @@ fn stack_comment_body_with_frozen(
     body
 }
 
+#[tracing::instrument(skip_all, fields(current_pr = current_pr_number))]
+fn repaired_stack_comment_body(
+    github: &GitHubContext,
+    prs: &[GhPr],
+    current_pr_number: u64,
+    trunk: &str,
+) -> String {
+    let mut body = format!("{STACK_COMMENT_MARKER}\nStack for {}\n\n", github.repo);
+
+    for pr in prs.iter().rev() {
+        push_repaired_stack_comment_line(
+            &mut body,
+            &github.repo,
+            pr,
+            pr.number == current_pr_number,
+        );
+    }
+
+    body.push_str(&format!("- {trunk}\n"));
+    body.push('\n');
+    if prs.iter().any(|pr| pr.number == current_pr_number) {
+        body.push_str(&format!(
+            "Check out this stack: `forklift get {}`\n",
+            current_pr_number
+        ));
+    }
+    body.push_str("Pull/update this stack: `forklift sync`\n");
+    body.push_str("Publish local edits: `forklift submit`\n");
+    body.push_str("Merge when ready: `forklift merge`\n");
+
+    body
+}
+
+#[tracing::instrument(level = "trace", skip_all, fields(pr = pr.number))]
+fn push_repaired_stack_comment_line(body: &mut String, repo: &str, pr: &GhPr, is_current: bool) {
+    let label = format!(
+        "[{} #{}]({})",
+        markdown_link_label(&pr.title),
+        pr.number,
+        github_pr_url(repo, pr.number),
+    );
+    let label = if is_current {
+        format!("**{label}**")
+    } else {
+        label
+    };
+    let current_marker = if is_current { " 👈" } else { "" };
+    let created_date = created_date_fragment(&pr.created_at);
+    body.push_str(&format!(
+        "- {} _{}_{}{}\n",
+        label,
+        stack_comment_change_hint(&pr.head_ref_name),
+        created_date,
+        current_marker
+    ));
+}
+
+#[tracing::instrument(level = "trace", skip_all)]
+fn stack_comment_change_hint(head_branch: &str) -> String {
+    let last = head_branch.rsplit('/').next().unwrap_or(head_branch);
+    let mut parts = last.rsplit('-');
+    let suffix = parts.next().unwrap_or(last);
+    if suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        parts.next().unwrap_or(suffix).to_owned()
+    } else {
+        suffix.to_owned()
+    }
+}
+
 #[tracing::instrument(level = "trace", skip_all, fields(change = %change_id))]
 fn push_stack_comment_line(
     body: &mut String,
@@ -7144,6 +7595,8 @@ fn lookup_open_pr_by_head_branch(
 struct GhPr {
     number: u64,
     state: String,
+    #[serde(default)]
+    merged: bool,
     #[serde(default)]
     id: String,
     #[serde(rename = "headRefName")]

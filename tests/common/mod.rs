@@ -414,6 +414,28 @@ impl TestRepo {
         self.write_gh_state(&state)
     }
 
+    pub fn set_pr_state(&self, pr_number: u64, state: &str) -> anyhow::Result<()> {
+        let mut gh_state = self.read_gh_state()?;
+        let prs = gh_state["prs"].as_array_mut().expect("prs array");
+        let pr = prs
+            .iter_mut()
+            .find(|pr| pr["number"] == json!(pr_number))
+            .with_context(|| format!("PR #{pr_number} not found in fake gh state"))?;
+        pr["state"] = json!(state);
+        self.write_gh_state(&gh_state)
+    }
+
+    pub fn set_pr_merged(&self, pr_number: u64, merged: bool) -> anyhow::Result<()> {
+        let mut gh_state = self.read_gh_state()?;
+        let prs = gh_state["prs"].as_array_mut().expect("prs array");
+        let pr = prs
+            .iter_mut()
+            .find(|pr| pr["number"] == json!(pr_number))
+            .with_context(|| format!("PR #{pr_number} not found in fake gh state"))?;
+        pr["merged"] = json!(merged);
+        self.write_gh_state(&gh_state)
+    }
+
     /// All PRs as stored (state reflects the last query that observed a merge).
     pub fn stored_prs(&self) -> anyhow::Result<Vec<Value>> {
         Ok(self
@@ -429,6 +451,16 @@ impl TestRepo {
             .into_iter()
             .find(|pr| pr["number"] == json!(number))
             .with_context(|| format!("PR #{number} not found in fake gh state"))
+    }
+
+    pub fn stored_comments(&self, pr_number: u64) -> anyhow::Result<Vec<Value>> {
+        Ok(self
+            .read_gh_state()?
+            .get("comments")
+            .and_then(|comments| comments.get(pr_number.to_string()))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
     }
 
     /// Every recorded `gh` invocation's argv.
@@ -771,9 +803,12 @@ def resolve_state(state, pr):
 def pr_view(state, pr):
     head = remote_oid(pr["headRefName"]) or "headsha"
     base = remote_oid(pr["baseRefName"]) or "basesha"
+    resolved_state = resolve_state(state, pr)
+    merged = bool(pr.get("merged", False)) or resolved_state.upper() == "MERGED"
     return {
         "number": pr["number"],
-        "state": resolve_state(state, pr),
+        "state": resolved_state,
+        "merged": merged,
         "id": "PR_node_%d" % pr["number"],
         "headRefName": pr["headRefName"],
         "baseRefName": pr["baseRefName"],
