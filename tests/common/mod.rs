@@ -436,6 +436,21 @@ impl TestRepo {
         self.write_gh_state(&gh_state)
     }
 
+    pub fn set_pr_review_decision(
+        &self,
+        pr_number: u64,
+        review_decision: &str,
+    ) -> anyhow::Result<()> {
+        let mut gh_state = self.read_gh_state()?;
+        let prs = gh_state["prs"].as_array_mut().expect("prs array");
+        let pr = prs
+            .iter_mut()
+            .find(|pr| pr["number"] == json!(pr_number))
+            .with_context(|| format!("PR #{pr_number} not found in fake gh state"))?;
+        pr["reviewDecision"] = json!(review_decision);
+        self.write_gh_state(&gh_state)
+    }
+
     /// All PRs as stored (state reflects the last query that observed a merge).
     pub fn stored_prs(&self) -> anyhow::Result<Vec<Value>> {
         Ok(self
@@ -823,7 +838,7 @@ def pr_view(state, pr):
         "body": pr.get("body", ""),
         "createdAt": "2026-06-03T12:34:56Z",
         "isDraft": False,
-        "reviewDecision": "APPROVED",
+        "reviewDecision": pr.get("reviewDecision", "APPROVED"),
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
         "statusCheckRollup": [{"context": "ci", "state": "SUCCESS"}],

@@ -420,6 +420,49 @@ fn merge_dry_run_discovers_pr_without_cache() -> anyhow::Result<()> {
 }
 
 #[test]
+fn merge_approval_failure_mentions_bypass_flags() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-approval-required")?;
+    repo.init_main()?;
+    let main = repo.bookmark_target("main")?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 7)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+    repo.set_pr_review_decision(7, "NONE")?;
+
+    let output = repo.run(&["merge"])?;
+    assert!(
+        !output.status.success(),
+        "merge should fail while approval is required"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("error: failed during merge-pr-check"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("PR #7 requires approval; reviewDecision is `NONE`"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("forklift merge --no-require-approval")
+            && stderr.contains("forklift merge --admin"),
+        "stderr should mention approval bypass flags:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("resolution:\n  run `forklift submit --dry-run`"),
+        "approval failure should not fall back to generic submit dry-run guidance:\n{stderr}"
+    );
+    assert_eq!(
+        repo.git_remote_branch_target("main")?,
+        main,
+        "merge must not advance trunk"
+    );
+    assert_eq!(repo.stored_pr(7)?["state"], json!("OPEN"));
+    Ok(())
+}
+
+#[test]
 fn merge_dry_run_refuses_stale_remote_trunk() -> anyhow::Result<()> {
     let repo = TestRepo::new("merge-dry-run-stale-trunk")?;
     repo.init_main()?;

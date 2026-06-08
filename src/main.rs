@@ -6047,11 +6047,15 @@ fn validate_pr_ready_for_merge(
         );
     }
     if config.require_approval && pr.review_decision.as_deref() != Some("APPROVED") {
-        bail!(
+        return Err(CliError::new(format!(
             "PR #{} requires approval; reviewDecision is `{}`",
             entry.pr_number,
             pr.review_decision.as_deref().unwrap_or("NONE")
-        );
+        ))
+        .resolution(
+            "get the PR approved, or rerun `forklift merge --no-require-approval` to skip approval checks. Use `forklift merge --admin` only when you also intend to bypass protected-branch/status gates.",
+        )
+        .into());
     }
     if pr.auto_merge_request.is_some() {
         bail!(
