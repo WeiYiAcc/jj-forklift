@@ -7,8 +7,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 use serde::Deserialize;
 
-const STACK_REVSET: &str = "main..@ & ~empty()";
-
 struct RealGithubRepo {
     root: PathBuf,
     work: PathBuf,
@@ -239,7 +237,7 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
     let bottom = repo.create_change("bottom", "bottom title")?;
     let top = repo.create_change("top", "top title")?;
 
-    let output = repo.run_forklift(&["submit", "--yes", "--revset", STACK_REVSET])?;
+    let output = repo.run_forklift(&["submit", "--yes"])?;
     assert_success("initial forklift submit", &output);
 
     let initial = repo.wait_for_open_prs(2)?;
@@ -250,7 +248,7 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
 
     repo.edit_change(&bottom, "bottom", "bottom title edited")?;
     repo.edit_top(&top)?;
-    let output = repo.run_forklift(&["submit", "--yes", "--revset", STACK_REVSET])?;
+    let output = repo.run_forklift(&["submit", "--yes"])?;
     assert_success("updated forklift submit", &output);
 
     let updated = repo.wait_for_open_prs(2)?;
@@ -262,7 +260,7 @@ fn real_github_submit_update_and_optional_merge() -> anyhow::Result<()> {
     assert_eq!(updated_top.head_ref_name, top_pr.head_ref_name);
     assert_eq!(updated_top.base_ref_name, edited_bottom.head_ref_name);
 
-    let merge = repo.run_forklift(&["merge", "--revset", STACK_REVSET, "--verbose"])?;
+    let merge = repo.run_forklift(&["merge", "--verbose"])?;
     if merge.status.success() {
         let remaining = repo.wait_for_open_prs(0)?;
         assert!(

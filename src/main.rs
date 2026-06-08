@@ -425,16 +425,7 @@ impl Commands {
 }
 
 #[derive(Debug, Args)]
-struct StackOptions {
-    #[arg(long, default_value = DEFAULT_STACK_REVSET)]
-    revset: String,
-}
-
-#[derive(Debug, Args)]
 struct SubmitOptions {
-    #[command(flatten)]
-    stack: StackOptions,
-
     /// Apply submit without prompting for confirmation.
     #[arg(short, long)]
     yes: bool,
@@ -442,9 +433,6 @@ struct SubmitOptions {
 
 #[derive(Debug, Args)]
 struct SyncOptions {
-    #[command(flatten)]
-    stack: StackOptions,
-
     /// Also run submit after syncing. Sync does not submit by default.
     #[arg(long)]
     submit: bool,
@@ -456,9 +444,6 @@ struct SyncOptions {
 
 #[derive(Debug, Args)]
 struct MergeOptions {
-    #[command(flatten)]
-    stack: StackOptions,
-
     target: Option<String>,
 
     /// Merge even if a PR is not approved, overriding the require-approval check.
@@ -504,9 +489,6 @@ struct PrOptions {
 
 #[derive(Debug, Args)]
 struct StatusOptions {
-    #[command(flatten)]
-    stack: StackOptions,
-
     #[arg(long)]
     json: bool,
 }
@@ -680,8 +662,8 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
 
     match cli.command {
         Commands::Submit(options) => {
-            let context = resolve_stack_context(runner, &options.stack.revset)
-                .map_err(|error| phase_error("resolve-stack", &options.stack.revset, error))?;
+            let context = resolve_stack_context(runner, DEFAULT_STACK_REVSET)
+                .map_err(|error| phase_error("resolve-stack", DEFAULT_STACK_REVSET, error))?;
             if cli.verbose {
                 print_github_context(&context.github);
                 print_stack(&context.stack);
@@ -734,7 +716,7 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             let summary = sync_stack(
                 runner,
                 &config,
-                &options.stack.revset,
+                DEFAULT_STACK_REVSET,
                 options.submit,
                 options.yes,
                 diagnostics,
@@ -770,10 +752,9 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             if options.no_require_approval || options.admin {
                 merge_config.require_approval = false;
             }
-            let target_label = options.target.as_deref().unwrap_or(&options.stack.revset);
-            let merge_revset =
-                effective_merge_revset(runner, &options.stack.revset, options.target.as_deref())
-                    .map_err(|error| phase_error("resolve-merge-target", target_label, error))?;
+            let target_label = options.target.as_deref().unwrap_or(DEFAULT_STACK_REVSET);
+            let merge_revset = effective_merge_revset(runner, options.target.as_deref())
+                .map_err(|error| phase_error("resolve-merge-target", target_label, error))?;
             let summary = merge_stack(
                 runner,
                 &merge_config,
@@ -789,9 +770,9 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             // those comments and the rebased branches are republished. The
             // no-target merge already refreshes remaining PRs each iteration.
             if !cli.dry_run && summary.merged_prs > 0 && options.target.is_some() {
-                refresh_stack_above_merge(runner, &config, &options.stack.revset, diagnostics)
+                refresh_stack_above_merge(runner, &config, DEFAULT_STACK_REVSET, diagnostics)
                     .map_err(|error| {
-                        phase_error("merge-refresh-above", &options.stack.revset, error)
+                        phase_error("merge-refresh-above", DEFAULT_STACK_REVSET, error)
                     })?;
             }
             if cli.verbose {
@@ -883,8 +864,8 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             }
         }
         Commands::Status(options) => {
-            let report = status_report(runner, &config, &options.stack.revset, diagnostics)
-                .map_err(|error| phase_error("status", &options.stack.revset, error))?;
+            let report = status_report(runner, &config, DEFAULT_STACK_REVSET, diagnostics)
+                .map_err(|error| phase_error("status", DEFAULT_STACK_REVSET, error))?;
             if options.json {
                 println!(
                     "{}",
@@ -1624,32 +1605,27 @@ fn resolve_single_rev(runner: &impl CommandRunner, rev: &str) -> Result<String> 
 #[tracing::instrument(skip_all)]
 fn effective_merge_revset(
     runner: &impl CommandRunner,
-    base_revset: &str,
     target: Option<&str>,
 ) -> Result<MergeRevset> {
     let Some(target) = target else {
         return Ok(MergeRevset {
-            revset: base_revset.to_owned(),
+            revset: DEFAULT_STACK_REVSET.to_owned(),
             target: None,
         });
     };
-    let mut target = resolve_merge_target(runner, target)?;
-    target.base_revset = base_revset.to_owned();
+    let target = resolve_merge_target(runner, target)?;
     Ok(MergeRevset {
-        revset: merge_revset_for_target(base_revset, &target.commit_id),
+        revset: merge_revset_for_target(&target.commit_id),
         target: Some(target),
     })
 }
 
 #[tracing::instrument(skip_all)]
-fn merge_revset_for_target(base_revset: &str, target_commit: &str) -> String {
-    if base_revset == DEFAULT_STACK_REVSET {
-        return format!(
-            "trunk()..{} & ~::(immutable_heads() | root()) & ~empty()",
-            target_commit
-        );
-    }
-    format!("({base_revset}) & ::{target_commit}")
+fn merge_revset_for_target(target_commit: &str) -> String {
+    format!(
+        "trunk()..{} & ~::(immutable_heads() | root()) & ~empty()",
+        target_commit
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1663,7 +1639,6 @@ struct MergeTarget {
     input: String,
     commit_id: String,
     pr_number: Option<u64>,
-    base_revset: String,
 }
 
 impl MergeTarget {
@@ -1688,7 +1663,6 @@ fn resolve_merge_target(runner: &impl CommandRunner, target: &str) -> Result<Mer
                 input: target.to_owned(),
                 commit_id: pr.head_ref_oid,
                 pr_number: Some(pr.number),
-                base_revset: String::new(),
             })
         }
         GetTarget::BranchOrChange { .. } => {
@@ -1697,7 +1671,6 @@ fn resolve_merge_target(runner: &impl CommandRunner, target: &str) -> Result<Mer
                     input: target.to_owned(),
                     commit_id: pr.head_ref_oid,
                     pr_number: Some(pr.number),
-                    base_revset: String::new(),
                 }),
                 Err(pr_error) => {
                     let commit_id = resolve_single_rev(runner, target).with_context(|| {
@@ -1709,7 +1682,6 @@ fn resolve_merge_target(runner: &impl CommandRunner, target: &str) -> Result<Mer
                         input: target.to_owned(),
                         commit_id,
                         pr_number: None,
-                        base_revset: String::new(),
                     })
                 }
             }
@@ -4500,14 +4472,14 @@ fn diagnose_empty_targeted_merge(
 
     if !target_range.is_empty() {
         return Err(CliError::new(format!(
-            "{target_label} is outside the selected merge revset"
+            "{target_label} is outside the active stack"
         ))
         .reason(format!(
-            "{target_label} resolves to {}, but it is not in --revset `{}`.",
-            target.commit_id, target.base_revset
+            "{target_label} resolves to {}, but it is not part of the owned mutable stack selected from `@`.",
+            target.commit_id
         ))
         .resolution(format!(
-            "rerun with a revset that includes {target_label}, or run `forklift merge {}` from that stack",
+            "move to the stack containing {target_label}, then run `forklift merge {}`",
             target.input
         ))
         .into());
@@ -6488,7 +6460,7 @@ fn frozen_dependencies_below_owned(
             .collect::<Vec<_>>()
             .join(", ");
         bail!(
-            "unsupported stack shape: multiple roots selected ({} roots): {root_labels}. Use --revset to select one linear stack.",
+            "unsupported stack shape: multiple roots selected ({} roots): {root_labels}. Move to a single linear stack before running forklift.",
             roots.len(),
         );
     };
@@ -8373,13 +8345,13 @@ fn change_label(change: &ResolvedChange) -> String {
 fn validate_stack_shape(stack: &[ResolvedChange], revset: &str) -> Result<()> {
     if stack.is_empty() {
         bail!(
-            "unsupported stack shape: empty stack selected by `{revset}`. Use --revset to select a non-empty linear stack."
+            "unsupported stack shape: empty stack selected by `{revset}`. Move to a non-empty owned stack before running forklift."
         );
     }
 
     if let Some(change) = stack.iter().find(|change| change.empty) {
         bail!(
-            "unsupported stack shape: empty change {} ({}) selected. Use --revset to exclude empty changes or amend the change before submitting.",
+            "unsupported stack shape: empty change {} ({}) selected. Amend or abandon the empty change before running forklift.",
             change.change_id,
             change.commit_id
         );
@@ -8387,7 +8359,7 @@ fn validate_stack_shape(stack: &[ResolvedChange], revset: &str) -> Result<()> {
 
     if let Some(change) = stack.iter().find(|change| change.conflict) {
         bail!(
-            "unsupported stack shape: conflicted change {} ({}) selected. Resolve conflicts, or use --revset to select a narrower stack.",
+            "unsupported stack shape: conflicted change {} ({}) selected. Resolve conflicts before running forklift.",
             change.change_id,
             change.commit_id
         );
@@ -8395,7 +8367,7 @@ fn validate_stack_shape(stack: &[ResolvedChange], revset: &str) -> Result<()> {
 
     if let Some(change) = stack.iter().find(|change| change.parent_ids.len() > 1) {
         bail!(
-            "unsupported stack shape: merge commit {} ({}) has {} parents. Use --revset to select a linear stack without merge commits.",
+            "unsupported stack shape: merge commit {} ({}) has {} parents. Forklift requires a linear owned stack.",
             change.change_id,
             change.commit_id,
             change.parent_ids.len()
@@ -8418,7 +8390,7 @@ fn validate_stack_shape(stack: &[ResolvedChange], revset: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         bail!(
-            "unsupported stack shape: multiple roots selected ({} roots): {root_labels}. Use --revset to select one linear stack.",
+            "unsupported stack shape: multiple roots selected ({} roots): {root_labels}. Move to a single linear stack before running forklift.",
             roots.len()
         );
     }
@@ -8443,7 +8415,7 @@ fn validate_stack_shape(stack: &[ResolvedChange], revset: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         bail!(
-            "unsupported stack shape: siblings selected under parent {parent_id} ({} children): {child_labels}. Use --revset to select one linear branch of the stack.",
+            "unsupported stack shape: siblings selected under parent {parent_id} ({} children): {child_labels}. Move to one linear branch before running forklift.",
             children.len()
         );
     }

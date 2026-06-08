@@ -39,6 +39,8 @@
 - When code needs to be testable from integration tests, move reusable logic into `src/lib.rs` and expose the smallest reasonable API.
 - After completing changes to this CLI, run `cargo install --path .` so the globally available `forklift` binary is updated.
 
+- Do **not** add user-facing `--revset` flags; fix stack-selection issues through classification, diagnostics, or explicit commands instead.
+
 ### Testing: never mock `jj` (or `git`) — only `gh`
 - **Always use the real `jj` binary in tests.** Never mock, fake, or stub `jj` anywhere — no PATH-shimmed fake `jj`, no `CommandRunner`-level canned `jj` output. The same goes for `git`: drive a real colocated `jj` repo backed by a real bare `git` remote (see `tests/real_jj.rs` for the harness pattern).
 - **`gh` is the only process that may be faked**, because we cannot create real GitHub PRs in CI. Define the fake `gh` once and share it across test files. (`tests/real_github.rs` exercises live GitHub and is env-gated.)
