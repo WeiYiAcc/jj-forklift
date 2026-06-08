@@ -1243,6 +1243,7 @@ impl Error for MergeSyncRequired {}
 
 fn phase_summary_for_error(phase: &str) -> &'static str {
     match phase {
+        "merge-pr-lookup" => "failed during merge-pr-lookup",
         "merge-pr-check" => "failed during merge-pr-check",
         "merge-push" => "failed during merge-push",
         _ => "command failed",
@@ -4973,8 +4974,11 @@ fn merge_stack(
         .stack
         .first()
         .with_context(|| format!("phase=resolve-stack object={revset} empty stack"))?;
-    let (_, bottom_pr) = resolve_merge_pr(runner, config, &context, bottom, diagnostics)
-        .map_err(|error| phase_error("merge-pr-lookup", &bottom.change_id, error))?;
+    let (_, bottom_pr) = match resolve_merge_pr(runner, config, &context, bottom, diagnostics) {
+        Ok(resolved) => resolved,
+        Err(error) if error.downcast_ref::<MergeSubmitRequired>().is_some() => return Err(error),
+        Err(error) => return Err(phase_error("merge-pr-lookup", &bottom.change_id, error)),
+    };
     validate_merge_frozen_dependencies(runner, config, &context, &bottom_pr).map_err(|error| {
         phase_error(
             "merge-frozen-check",
@@ -5003,6 +5007,9 @@ fn merge_stack(
             Err(error) => {
                 if let Some(progress) = checking_progress {
                     ui_finish_progress_bar(progress);
+                }
+                if error.downcast_ref::<MergeSubmitRequired>().is_some() {
+                    return Err(error);
                 }
                 return Err(phase_error("merge-pr-lookup", &change.change_id, error));
             }
@@ -5816,11 +5823,16 @@ fn resolve_merge_pr_from_live_bookmarks(
 
     match matches.as_slice() {
         [(comment_id, pr)] => Ok((pr.clone().into_cache_entry(comment_id.clone()), pr.clone())),
-        [] => bail!(
-            "change {} is still local-only: no tracked stack bookmark or GitHub PR was found for `{}`. PRs may exist for changes below it, but merge can only verify submitted changes. Run `forklift submit`, confirm the plan, then rerun `forklift merge`.",
-            short_change_id(&change.change_id),
-            change.title
-        ),
+        [] => Err(MergeSubmitRequired::new(
+            format!(
+                "change {} is still local-only: no tracked stack bookmark or GitHub PR was found for `{}`. PRs may exist for changes below it, but merge can only verify submitted changes.",
+                short_change_id(&change.change_id),
+                change.title
+            ),
+            "run `forklift submit`, confirm the plan, then rerun `forklift merge`",
+        )
+        .with_phase("merge-pr-lookup", change.change_id.clone())
+        .into()),
         _ => bail!(
             "multiple live tracked PRs found for {}/{}; refusing to choose before merge",
             github.repo,

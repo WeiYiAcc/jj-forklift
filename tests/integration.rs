@@ -736,8 +736,12 @@ fn merge_unsubmitted_child_explains_local_only_change() -> anyhow::Result<()> {
     );
     assert!(
         stderr.contains("merge can only verify submitted changes")
-            && stderr.contains("Run `forklift submit`"),
+            && stderr.contains("resolution:\n  run `forklift submit --yes`, then `forklift merge`"),
         "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("resolution:\n  run `forklift submit --dry-run`"),
+        "local-only merge should point to submit, not dry-run, stderr:\n{stderr}"
     );
     assert_ne!(repo.stored_pr(32)?["state"], json!("MERGED"));
     Ok(())
