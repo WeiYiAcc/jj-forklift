@@ -450,6 +450,10 @@ struct SyncOptions {
 struct MergeOptions {
     target: Option<String>,
 
+    /// Run sync with submit before merging, using the same optional target.
+    #[arg(long)]
+    sync: bool,
+
     /// Merge even if a PR is not approved, overriding the require-approval check.
     #[arg(long)]
     no_require_approval: bool,
@@ -760,14 +764,30 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             if options.no_require_approval || options.admin {
                 merge_config.require_approval = false;
             }
+            if options.sync {
+                let target_label = options.target.as_deref().unwrap_or(DEFAULT_STACK_REVSET);
+                let sync_revset = effective_sync_revset(runner, options.target.as_deref())
+                    .map_err(|error| phase_error("resolve-sync-target", target_label, error))?;
+                sync_stack(
+                    runner,
+                    &config,
+                    &sync_revset.revset,
+                    sync_revset.target.as_ref(),
+                    true,
+                    true,
+                    diagnostics,
+                )?;
+            }
             let target_label = options.target.as_deref().unwrap_or(DEFAULT_STACK_REVSET);
             let merge_revset = effective_merge_revset(runner, options.target.as_deref())
                 .map_err(|error| phase_error("resolve-merge-target", target_label, error))?;
+            let sync_command = merge_sync_command(options.target.as_deref());
             let summary = merge_stack(
                 runner,
                 &merge_config,
                 &merge_revset.revset,
                 merge_revset.target.as_ref(),
+                &sync_command,
                 options.admin,
                 diagnostics,
             )?;
@@ -1650,6 +1670,13 @@ fn effective_sync_revset(runner: &impl CommandRunner, target: Option<&str>) -> R
         revset: merge_revset_for_target(&target.commit_id),
         target: Some(target),
     })
+}
+
+fn merge_sync_command(target: Option<&str>) -> String {
+    match target {
+        Some(target) => format!("forklift merge {target} --sync"),
+        None => "forklift merge --sync".to_owned(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4545,6 +4572,7 @@ fn merge_stack(
     config: &AppConfig,
     revset: &str,
     target: Option<&MergeTarget>,
+    sync_command: &str,
     admin: bool,
     diagnostics: Diagnostics,
 ) -> Result<MergeSummary> {
@@ -4705,7 +4733,7 @@ fn merge_stack(
         .with_context(|| format!("phase=resolve-stack object={revset} empty stack"))?;
 
     if diagnostics.dry_run {
-        validate_trunk_fast_forward_over_stack(runner, config, &top.commit_id)
+        validate_trunk_fast_forward_over_stack(runner, config, &top.commit_id, sync_command)
             .map_err(|error| phase_error("merge-push", &config.trunk, error))?;
         diagnostics.plan_line(&format!(
             "- fast-forward trunk `{}` to {} ({})",
@@ -4732,7 +4760,7 @@ fn merge_stack(
     // Fast-forward trunk over the whole stack and push once. This preserves the
     // individual commits (no squash).
     diagnostics.phase("merge-push");
-    fast_forward_trunk_over_stack(runner, config, &top.commit_id, diagnostics)
+    fast_forward_trunk_over_stack(runner, config, &top.commit_id, sync_command, diagnostics)
         .map_err(|error| phase_error("merge-push", &config.trunk, error))?;
     summary.submit_runs += 1;
 
@@ -4803,9 +4831,10 @@ fn fast_forward_trunk_over_stack(
     runner: &impl CommandRunner,
     config: &AppConfig,
     top_commit: &str,
+    sync_command: &str,
     diagnostics: Diagnostics,
 ) -> Result<()> {
-    validate_trunk_fast_forward_over_stack(runner, config, top_commit)?;
+    validate_trunk_fast_forward_over_stack(runner, config, top_commit, sync_command)?;
 
     // jj's default `git.auto-local-bookmark = false` leaves a fetched remote
     // trunk bookmark untracked, and `jj bookmark set <trunk>` below then creates
@@ -4850,6 +4879,7 @@ fn validate_trunk_fast_forward_over_stack(
     runner: &impl CommandRunner,
     config: &AppConfig,
     top_commit: &str,
+    sync_command: &str,
 ) -> Result<()> {
     let remote_git_ref = remote_git_ref(config);
     let remote = git_rev_parse(runner, &remote_git_ref)?;
@@ -4859,10 +4889,11 @@ fn validate_trunk_fast_forward_over_stack(
     )?;
     if !is_ancestor.success {
         bail!(
-            "trunk `{}` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift sync` first",
+            "trunk `{}` cannot fast-forward to {}: remote {} is not an ancestor; run `{}` first",
             config.trunk,
             top_commit,
-            remote
+            remote,
+            sync_command
         );
     }
     Ok(())

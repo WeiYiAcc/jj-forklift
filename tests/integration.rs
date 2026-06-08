@@ -414,7 +414,7 @@ fn merge_dry_run_refuses_stale_remote_trunk() -> anyhow::Result<()> {
     );
     assert!(
         stderr.contains(&format!(
-            "trunk `main` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift sync` first",
+            "trunk `main` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift merge 9 --sync` first",
             submitted.commit_id, advanced.commit_id
         )),
         "stderr:\n{stderr}"
@@ -424,6 +424,33 @@ fn merge_dry_run_refuses_stale_remote_trunk() -> anyhow::Result<()> {
         "stale dry-run must not print a fast-forward plan\nstderr:\n{stderr}"
     );
     assert_eq!(repo.git_remote_branch_target("main")?, advanced.commit_id);
+    Ok(())
+}
+
+#[test]
+fn merge_sync_rebases_submits_then_merges_target() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-sync-target")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+    let submitted = repo.change_at(&change.change_id)?;
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+
+    let output = repo.run(&["merge", "9", "--sync", "--admin"])?;
+    assert_success("merge 9 --sync --admin", &output);
+
+    let remote_main = repo.git_remote_branch_target("main")?;
+    assert_ne!(
+        remote_main, submitted.commit_id,
+        "merge --sync should not merge the stale pre-sync PR head"
+    );
+    assert_ne!(
+        remote_main, advanced.commit_id,
+        "merge --sync should fast-forward trunk beyond the fetched remote tip"
+    );
+    assert_eq!(repo.stored_pr(9)?["state"], json!("MERGED"));
     Ok(())
 }
 
