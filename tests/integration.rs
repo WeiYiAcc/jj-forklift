@@ -416,7 +416,7 @@ fn merge_refuses_open_frozen_dependency_below_owned_pr() -> anyhow::Result<()> {
     repo.push_bookmark(&top)?;
     repo.seed_pr(11, &bottom, "main", "change 1 title", "change 1 body")?;
     repo.seed_pr(12, &top, &bottom, "change 2 title", "change 2 body")?;
-    repo.set_bookmark("jj-stack/frozen/pr-11", &stack[0].commit_id)?;
+    repo.set_bookmark("forklift/frozen/pr-11", &stack[0].commit_id)?;
 
     let output = repo.run(&["merge"])?;
     assert!(

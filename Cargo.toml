@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+# `cargo install --path .` installs each binary target listed here.
+[[bin]]
+name = "forklift"
+path = "src/main.rs"
+
+[[bin]]
+name = "forklift-ui-mock"
+path = "src/bin/forklift-ui-mock.rs"
+
 [dependencies]
 anyhow = "1.0.98"
 clap = { version = "4.5.38", features = ["derive"] }

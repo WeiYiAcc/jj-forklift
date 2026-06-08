@@ -70,7 +70,7 @@ fn run_submit_actions_scenario() -> Result<()> {
     let fixture = Fixture::new("submit-actions")?;
     fixture.seed_submit_actions()?;
 
-    eprintln!("ui-scenario: submit-actions");
+    eprintln!("forklift-ui-mock: submit-actions");
     eprintln!("fixture: {}", fixture.root.display());
     eprintln!("running: forklift submit");
 
@@ -90,7 +90,7 @@ fn run_sync_only_scenario() -> Result<()> {
     let fixture = Fixture::new("sync-only")?;
     fixture.seed_sync_stack()?;
 
-    eprintln!("ui-scenario: sync-only");
+    eprintln!("forklift-ui-mock: sync-only");
     eprintln!("fixture: {}", fixture.root.display());
     eprintln!("running: forklift sync");
 
@@ -110,7 +110,7 @@ fn run_sync_submit_scenario() -> Result<()> {
     let fixture = Fixture::new("sync-submit")?;
     fixture.seed_submit_actions()?;
 
-    eprintln!("ui-scenario: sync-submit");
+    eprintln!("forklift-ui-mock: sync-submit");
     eprintln!("fixture: {}", fixture.root.display());
     eprintln!("running: forklift sync --submit");
 
@@ -130,7 +130,7 @@ fn run_merge_scenario(scenario: Scenario) -> Result<()> {
     let fixture = Fixture::new(scenario.name())?;
     fixture.seed_two_pr_merge(scenario)?;
 
-    eprintln!("ui-scenario: {}", scenario.name());
+    eprintln!("forklift-ui-mock: {}", scenario.name());
     eprintln!("fixture: {}", fixture.root.display());
     eprintln!("running: forklift merge --admin");
 
@@ -373,8 +373,8 @@ impl Fixture {
             .args(args)
             .current_dir(&self.workspace)
             .env("PATH", format!("{}:{old_path}", self.bin_dir.display()))
-            .env("UI_SCENARIO_ROOT", &self.root)
-            .env("UI_SCENARIO_WORKSPACE", &self.workspace)
+            .env("FORKLIFT_UI_MOCK_ROOT", &self.root)
+            .env("FORKLIFT_UI_MOCK_WORKSPACE", &self.workspace)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -535,7 +535,10 @@ fn write_executable(path: &Path, contents: &str) -> Result<()> {
 
 fn unique_dir(name: &str) -> Result<PathBuf> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let path = env::temp_dir().join(format!("forklift-ui-{name}-{}-{nanos}", std::process::id()));
+    let path = env::temp_dir().join(format!(
+        "forklift-ui-mock-{name}-{}-{nanos}",
+        std::process::id()
+    ));
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -563,8 +566,8 @@ import sys
 import time
 from pathlib import Path
 
-root = Path(os.environ["UI_SCENARIO_ROOT"])
-workspace = Path(os.environ["UI_SCENARIO_WORKSPACE"])
+root = Path(os.environ["FORKLIFT_UI_MOCK_ROOT"])
+workspace = Path(os.environ["FORKLIFT_UI_MOCK_WORKSPACE"])
 args = sys.argv[1:]
 
 with (root / "gh-requests.jsonl").open("a") as fh:

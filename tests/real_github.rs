@@ -52,7 +52,7 @@ impl RealGithubRepo {
                 "--disable-issues",
                 "--disable-wiki",
                 "--description",
-                "Disposable forklift E2E repository",
+                "Disposable Forklift E2E repository",
             ],
         )
         .with_context(|| {
@@ -63,7 +63,7 @@ impl RealGithubRepo {
 
         run_ok_in(&root, "jj", &["git", "init", "--colocate", "work"])?;
         run_ok_in(&work, "git", &["config", "user.email", "test@example.com"])?;
-        run_ok_in(&work, "git", &["config", "user.name", "forklift E2E"])?;
+        run_ok_in(&work, "git", &["config", "user.name", "Forklift E2E"])?;
         run_ok_in(
             &work,
             "jj",
@@ -72,7 +72,7 @@ impl RealGithubRepo {
         run_ok_in(
             &work,
             "jj",
-            &["config", "set", "--repo", "user.name", "forklift E2E"],
+            &["config", "set", "--repo", "user.name", "Forklift E2E"],
         )?;
         run_ok_in(
             &work,
