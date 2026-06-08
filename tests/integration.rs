@@ -1437,7 +1437,7 @@ fn submit_from_secondary_workspace_pushes_branch_and_writes_cache_to_backing_rep
         .output()?;
     assert_success("jj edit on secondary", &edit_output);
 
-    let output = repo.run_in(&secondary, &["submit", "--revset", REVSET])?;
+    let output = repo.run_in(&secondary, &["submit", "--yes"])?;
     assert_success("submit from secondary workspace", &output);
 
     // Real `jj git push` ran via the backing repo; the branch reached the
