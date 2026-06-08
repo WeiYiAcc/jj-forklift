@@ -372,7 +372,7 @@ const DEFAULT_BRANCH_PREFIX: &str = "stack";
 const DEFAULT_STACK_REVSET: &str = "trunk()..@ & ~::(immutable_heads() | root()) & ~empty()";
 const STACK_FIELD_SEPARATOR: char = '\x1f';
 const STACK_RECORD_SEPARATOR: char = '\x1e';
-const STACK_LOG_TEMPLATE: &str = "json(change_id) ++ \"\\x1f\" ++ json(commit_id) ++ \"\\x1f\" ++ json(parents.map(|c| c.commit_id())) ++ \"\\x1f\" ++ json(description.first_line()) ++ \"\\x1f\" ++ json(description) ++ \"\\x1f\" ++ json(empty) ++ \"\\x1f\" ++ json(conflict) ++ \"\\x1e\"";
+const STACK_LOG_TEMPLATE: &str = "json(change_id) ++ \"\\x1f\" ++ json(commit_id) ++ \"\\x1f\" ++ json(parents.map(|c| c.commit_id())) ++ \"\\x1f\" ++ json(description.first_line()) ++ \"\\x1f\" ++ json(description) ++ \"\\x1f\" ++ json(empty) ++ \"\\x1f\" ++ json(conflict) ++ \"\\x1f\" ++ json(divergent) ++ \"\\x1e\"";
 const PR_JSON_FIELDS: &str = "number,state,headRefName,baseRefName,headRefOid,baseRefOid,title,body,createdAt,id,author,headRepository";
 const MERGE_PR_JSON_FIELDS: &str = "number,state,headRefName,baseRefName,headRefOid,baseRefOid,title,body,createdAt,isDraft,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,autoMergeRequest";
 const PR_API_JQ: &str = "{number,state,merged,headRefName:.head.ref,baseRefName:.base.ref,headRefOid:.head.sha,baseRefOid:.base.sha,title,body,createdAt:.created_at,id:.node_id,headRepository:{id:(.head.repo.id|tostring),node_id:.head.repo.node_id,nameWithOwner:.head.repo.full_name},baseRepository:{id:(.base.repo.id|tostring),node_id:.base.repo.node_id,nameWithOwner:.base.repo.full_name},author:{login:.user.login}}";
@@ -1809,6 +1809,7 @@ struct ResolvedChange {
     tree_id: String,
     empty: bool,
     conflict: bool,
+    divergent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7122,13 +7123,27 @@ fn validate_submit_bookmark_state(
         )
     })?;
     if local_target != change.commit_id {
-        bail!(CliError::new(format!(
-            "local head bookmark `{}` points at {}, but selected change {} is {}",
-            entry.head_branch,
-            short_commit_id(&local_target),
-            short_change_id(&change.change_id),
-            short_commit_id(&change.commit_id)
-        )));
+        // The bookmark may be stranded on a divergent sibling — the same change
+        // resolved to a second visible commit (e.g. a duplicate that didn't
+        // carry the bookmark). That is safe: the push phase re-points the
+        // bookmark onto the selected copy with `jj bookmark set`. Only bail when
+        // the bookmark sits on an unrelated change.
+        let local_change_id = jj_ref_change_id(runner, &entry.head_branch).with_context(|| {
+            format!(
+                "resolve change id for local head bookmark `{}`",
+                entry.head_branch
+            )
+        })?;
+        if local_change_id != change.change_id {
+            bail!(CliError::new(format!(
+                "local head bookmark `{}` points at {} (change {}), but selected change {} is {}",
+                entry.head_branch,
+                short_commit_id(&local_target),
+                short_change_id(&local_change_id),
+                short_change_id(&change.change_id),
+                short_commit_id(&change.commit_id)
+            )));
+        }
     }
 
     let remote = remote_bookmark_status(runner, config, &entry.head_branch)?;
@@ -7158,6 +7173,16 @@ fn jj_ref_commit_id(runner: &impl CommandRunner, rev: &str) -> Result<String> {
         &["log", "--no-graph", "-r", rev, "-T", "commit_id"],
     )
     .with_context(|| format!("resolve jj revision `{rev}`"))
+}
+
+#[tracing::instrument(level = "trace", skip_all, fields(rev = %rev))]
+fn jj_ref_change_id(runner: &impl CommandRunner, rev: &str) -> Result<String> {
+    run_required(
+        runner,
+        "jj",
+        &["log", "--no-graph", "-r", rev, "-T", "change_id"],
+    )
+    .with_context(|| format!("resolve change id for jj revision `{rev}`"))
 }
 
 #[tracing::instrument(skip_all, fields(branch = %branch))]
@@ -7389,6 +7414,10 @@ fn submit_stack(
     yes_command: &str,
     diagnostics: Diagnostics,
 ) -> Result<SubmitSummary> {
+    // Surface divergence before planning so the heads-up is visible regardless of
+    // which copy the PR bookmark was stranded on; the push phase re-points it.
+    warn_divergent_changes(&context.stack);
+
     diagnostics.phase("validate-submit-bases");
     validate_submit_bases(runner, config, &context.stack, &context.frozen_dependencies)
         .map_err(|error| phase_error("validate-submit-bases", "stack", error))?;
@@ -8892,8 +8921,8 @@ fn parse_stack_log(runner: &impl CommandRunner, stdout: &str) -> Result<Vec<Reso
 #[tracing::instrument(level = "trace", skip_all)]
 fn parse_stack_record(runner: &impl CommandRunner, record: &str) -> Result<ResolvedChange> {
     let fields = record.split(STACK_FIELD_SEPARATOR).collect::<Vec<_>>();
-    if fields.len() != 7 {
-        bail!("expected 7 stack fields, got {}", fields.len());
+    if fields.len() != 8 {
+        bail!("expected 8 stack fields, got {}", fields.len());
     }
 
     let change_id = parse_json_string(fields[0], "change id")?;
@@ -8903,6 +8932,7 @@ fn parse_stack_record(runner: &impl CommandRunner, record: &str) -> Result<Resol
     let description = parse_json_string(fields[4], "description")?;
     let empty = serde_json::from_str::<bool>(fields[5]).context("parse empty status")?;
     let conflict = serde_json::from_str::<bool>(fields[6]).context("parse conflict status")?;
+    let divergent = serde_json::from_str::<bool>(fields[7]).context("parse divergent status")?;
     let tree_id = resolve_tree_id(runner, &commit_id)?;
 
     Ok(ResolvedChange {
@@ -8914,6 +8944,7 @@ fn parse_stack_record(runner: &impl CommandRunner, record: &str) -> Result<Resol
         tree_id,
         empty,
         conflict,
+        divergent,
     })
 }
 
@@ -8944,6 +8975,21 @@ fn change_label(change: &ResolvedChange) -> String {
         short_change_id(&change.change_id),
         short_commit_id(&change.commit_id)
     )
+}
+
+/// Prints one non-fatal line per divergent change: its change ID resolves to
+/// more than one visible commit, and forklift submits the copy under `@`. The
+/// other copies are left untouched — whether to abandon them is the user's call.
+/// The push phase re-points the PR bookmark onto the submitted copy regardless of
+/// which copy it was stranded on, so divergence does not block submit.
+fn warn_divergent_changes(stack: &[ResolvedChange]) {
+    for change in stack.iter().filter(|change| change.divergent) {
+        ui_warn_line(&format!(
+            "change {} is divergent; submitting the copy under @ ({}), other copies left untouched",
+            short_change_id(&change.change_id),
+            short_commit_id(&change.commit_id),
+        ));
+    }
 }
 
 #[tracing::instrument(skip_all, fields(revset = %revset))]

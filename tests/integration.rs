@@ -1485,3 +1485,56 @@ fn submit_from_secondary_workspace_pushes_branch_and_writes_cache_to_backing_rep
     );
     Ok(())
 }
+
+#[test]
+fn submit_repoints_pr_bookmark_stranded_on_divergent_copy() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-divergent")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 7)?;
+
+    // Force the change ID to diverge into two visible commits by rewriting it at
+    // two different operations. `--at-operation @-` rewrites the change as it was
+    // before the previous describe, creating a sibling copy rather than obsoleting
+    // the first. jj then marks every copy of the change ID as divergent.
+    repo.jj(&["describe", "-m", "change title", "-m", "rewrite one"])?;
+    repo.jj(&[
+        "describe",
+        "--at-operation",
+        "@-",
+        "-m",
+        "change title",
+        "-m",
+        "rewrite two",
+    ])?;
+
+    // The copy reachable from @ is the one forklift submits; the other is stale.
+    let selected = repo.rev_commit_id(&format!("change_id({}) & ::@", change.change_id))?;
+    let stale = repo.rev_commit_id(&format!("change_id({}) ~ ::@", change.change_id))?;
+
+    // Reproduce the real bug: the PR branch is stranded on the *stale* copy, not
+    // the one under @. Submit must still re-point it onto the selected copy rather
+    // than bailing because the bookmark "points elsewhere".
+    repo.set_bookmark(&branch, &stale)?;
+
+    let output = repo.run(&["submit", "--yes"])?;
+    assert_success("submit", &output);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("is divergent") && stderr.contains("other copies left untouched"),
+        "submit should print the one-line divergence notice\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("jj abandon"),
+        "submit must not prescribe abandoning the stale copy\nstderr:\n{stderr}"
+    );
+
+    // The PR was opened against the @-copy, the local bookmark was re-pointed off
+    // the stale copy, and the @-copy is the commit pushed.
+    let pr = repo.stored_pr(7)?;
+    assert_eq!(pr["headRefName"], json!(branch));
+    assert_eq!(repo.bookmark_target(&branch)?, selected);
+    assert_eq!(repo.git_remote_branch_target(&branch)?, selected);
+    Ok(())
+}
