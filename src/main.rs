@@ -7367,7 +7367,8 @@ fn submit_stack(
     validate_submit_descriptions(&context.stack)
         .map_err(|error| phase_error("validate-submit-bases", "stack", error))?;
 
-    diagnostics.phase("plan-submit");
+    tracing::debug!(phase = "plan-submit", "recovery phase");
+    let plan_progress = diagnostics.progress_bar("Planning", "submit", context.stack.len());
     let mut store = CacheStore::load_current_best_effort(runner, diagnostics, "plan-submit")
         .map_err(|error| phase_error("plan-submit", "cache", error))?;
     diagnostics.repo_details(&store);
@@ -7384,7 +7385,7 @@ fn submit_stack(
         .last()
         .map(|(_, entry)| entry.head_branch.clone());
 
-    for change in &context.stack {
+    for (index, change) in context.stack.iter().enumerate() {
         let base_branch = previous_head_branch
             .clone()
             .unwrap_or_else(|| config.trunk.clone());
@@ -7420,6 +7421,16 @@ fn submit_stack(
             .is_some_and(|entry| push_needed || pr_metadata_changed(entry, &base_branch, change));
 
         previous_head_branch = Some(head_branch.clone());
+        tracing::debug!(
+            phase = "plan-submit",
+            change = %change.change_id,
+            head_branch = %head_branch,
+            base_branch = %base_branch,
+            push_needed,
+            pr_update_needed,
+            existing_pr = existing_pr.as_ref().map(|entry| entry.pr_number),
+            "planned submit change"
+        );
         plans.push(SubmitPlan {
             change: change.clone(),
             head_branch,
@@ -7429,6 +7440,12 @@ fn submit_stack(
             push_needed,
             pr_update_needed,
         });
+        if let Some(progress) = &plan_progress {
+            progress.set_position((index + 1) as u64);
+        }
+    }
+    if let Some(progress) = plan_progress {
+        ui_finish_progress_bar(progress);
     }
 
     let mut summary = SubmitSummary {
