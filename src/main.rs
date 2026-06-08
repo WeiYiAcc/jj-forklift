@@ -239,7 +239,7 @@ const PROGRESS_VERB_WIDTH: usize = 12;
 /// Emits a cargo-style progress line to stderr: a right-aligned bold-green
 /// verb in a fixed-width gutter, followed by a message. Append-only — never
 /// rewrites or clears lines. Goes to stderr so stdout stays clean for machine
-/// output (`status --json`, the `next:` command).
+/// output (`status --json`, follow-up command hints).
 fn ui_progress(verb: &str, message: &str) {
     // Pad the plain verb first, then color, so ANSI escapes don't throw off the
     // alignment width.
@@ -445,6 +445,10 @@ struct MergeOptions {
 #[derive(Debug, Args)]
 struct GetOptions {
     target: String,
+
+    /// Do not move the working copy to a new editable change after fetching.
+    #[arg(long)]
+    no_edit: bool,
 }
 
 #[derive(Debug, Args)]
@@ -770,7 +774,13 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             }
         }
         Commands::Get(options) => {
-            let summary = get_stack(runner, &config, &options.target, diagnostics)?;
+            let summary = get_stack(
+                runner,
+                &config,
+                &options.target,
+                !options.no_edit,
+                diagnostics,
+            )?;
             if cli.dry_run {
                 ui_progress(
                     "Finished",
@@ -783,8 +793,14 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
                 ui_progress(
                     "Finished",
                     &format!(
-                        "get — {} PRs fetched, {} cache entries written",
-                        summary.prs, summary.cache_entries
+                        "get — {} PRs fetched, {} cache entries written{}",
+                        summary.prs,
+                        summary.cache_entries,
+                        if summary.edited {
+                            ", editing new change"
+                        } else {
+                            ""
+                        }
                     ),
                 );
             }
@@ -2046,6 +2062,7 @@ struct GetSummary {
     prs: usize,
     fetched_branches: usize,
     cache_entries: usize,
+    edited: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2303,6 +2320,7 @@ fn get_stack(
     runner: &impl CommandRunner,
     config: &AppConfig,
     target: &str,
+    auto_edit: bool,
     diagnostics: Diagnostics,
 ) -> Result<GetSummary> {
     diagnostics.phase("resolve-github");
@@ -2351,7 +2369,13 @@ fn get_stack(
     let next_command = format!("jj new {top_frozen}");
     if diagnostics.dry_run {
         update_get_frozen_bookmarks(runner, &prs, diagnostics)?;
-        diagnostics.plan_line(&format!("- next: {next_command}"));
+        if auto_edit {
+            diagnostics.plan_line(&format!("- move working copy: {next_command}"));
+        } else {
+            diagnostics.plan_line(&format!(
+                "- skip editing: run `{next_command}` to start editing above the fetched stack"
+            ));
+        }
         diagnostics.plan_line(
             "- live GitHub discovery ran during planning; SQLite cache writes are skipped",
         );
@@ -2359,6 +2383,7 @@ fn get_stack(
             prs: pr_count,
             fetched_branches: pr_count,
             cache_entries: 0,
+            edited: false,
         });
     }
 
@@ -2369,7 +2394,6 @@ fn get_stack(
     diagnostics.phase("freeze-stack");
     update_get_frozen_bookmarks(runner, &prs, diagnostics)
         .map_err(|error| phase_error("freeze-stack", "frozen bookmarks", error))?;
-    ui_info!("next: `{next_command}`");
 
     diagnostics.phase("write-cache");
     let mut store = CacheStore::load_current_best_effort(runner, diagnostics, "write-cache")
@@ -2386,11 +2410,41 @@ fn get_stack(
         cache_entries = 0;
     }
 
+    let edited = if auto_edit {
+        diagnostics.phase("edit-stack");
+        edit_get_stack(runner, &top_frozen, diagnostics)
+            .map_err(|error| phase_error("edit-stack", &top_frozen, error))?;
+        true
+    } else {
+        ui_info!("skip editing: run `{next_command}` to start editing above the fetched stack");
+        false
+    };
+
     Ok(GetSummary {
         prs: pr_count,
         fetched_branches: pr_count,
         cache_entries: cache_entries,
+        edited,
     })
+}
+
+#[tracing::instrument(skip_all, fields(top = top_frozen))]
+fn edit_get_stack(
+    runner: &impl CommandRunner,
+    top_frozen: &str,
+    diagnostics: Diagnostics,
+) -> Result<()> {
+    let args = ["new", top_frozen];
+    diagnostics.command("jj", &args);
+    let output = runner.run("jj", &args)?;
+    if !output.success {
+        bail!(
+            "failed-command=`{}` error={}",
+            display_command("jj", &args),
+            output.stderr.trim()
+        );
+    }
+    Ok(())
 }
 
 #[tracing::instrument(skip_all, fields(target = target))]

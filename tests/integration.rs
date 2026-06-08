@@ -569,10 +569,10 @@ fn get_imports_single_pr_without_stack_comment() -> anyhow::Result<()> {
         !repo.bookmark_exists("forklift/frozen/pr-12")?,
         "single-PR import should not infer descendants"
     );
-    assert!(
-        stdout_of(&output).contains("next: `jj new forklift/frozen/pr-11`"),
-        "stdout:\n{}",
-        stdout_of(&output)
+    assert_eq!(
+        repo.rev_commit_id("@-")?,
+        imported.commit_id,
+        "get should leave @ on a new editable change above the imported PR"
     );
     assert_eq!(
         repo.cache_entry(&imported.change_id)?["pr_number"],
@@ -616,7 +616,7 @@ fn get_fetches_stack_from_comment_and_writes_cache() -> anyhow::Result<()> {
         &common::stack_comment_body(&rows, &stack[1].change_id),
     )?;
 
-    let output = repo.run(&["get", "12"])?;
+    let output = repo.run(&["get", "12", "--no-edit"])?;
     assert_success("get 12", &output);
 
     assert_eq!(
@@ -628,7 +628,9 @@ fn get_fetches_stack_from_comment_and_writes_cache() -> anyhow::Result<()> {
         stack[1].commit_id
     );
     assert!(
-        stdout_of(&output).contains("next: `jj new forklift/frozen/pr-12`"),
+        stdout_of(&output).contains(
+            "skip editing: run `jj new forklift/frozen/pr-12` to start editing above the fetched stack"
+        ),
         "stdout:\n{}",
         stdout_of(&output)
     );
