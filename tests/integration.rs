@@ -392,6 +392,42 @@ fn merge_dry_run_discovers_pr_without_cache() -> anyhow::Result<()> {
 }
 
 #[test]
+fn merge_dry_run_refuses_stale_remote_trunk() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-dry-run-stale-trunk")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+    let submitted = repo.change_at(&change.change_id)?;
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+
+    let output = repo.run(&["merge", "9", "--dry-run", "--admin"])?;
+    assert!(
+        !output.status.success(),
+        "dry-run merge must reject stale trunk instead of printing a fast-forward plan"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("error: failed during merge-push"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "trunk `main` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift sync` first",
+            submitted.commit_id, advanced.commit_id
+        )),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("fast-forward trunk `main`"),
+        "stale dry-run must not print a fast-forward plan\nstderr:\n{stderr}"
+    );
+    assert_eq!(repo.git_remote_branch_target("main")?, advanced.commit_id);
+    Ok(())
+}
+
+#[test]
 fn clean_two_pr_merge_fast_forwards_trunk_and_merges_by_reachability() -> anyhow::Result<()> {
     let repo = TestRepo::new("merge-two-clean")?;
     repo.init_main()?;
@@ -616,6 +652,105 @@ fn sync_rebases_then_submits() -> anyhow::Result<()> {
     assert_eq!(parent, advanced.commit_id, "change should sit on new trunk");
     // And submitted.
     assert!(repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}
+
+#[test]
+fn targeted_sync_rebases_target_stack_without_current_checkout() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-target-side-stack")?;
+    let main = repo.init_main()?;
+    let target = repo.create_change("target", "target title", "target body")?;
+    let target_branch = branch_for("target-title", &target.change_id);
+    repo.set_bookmark(&target_branch, &target.commit_id)?;
+    repo.push_bookmark(&target_branch)?;
+    repo.seed_pr(1, &target_branch, "main", "target title", "target body")?;
+
+    repo.jj(&["new", "main"])?;
+    let unrelated = repo.create_change("unrelated", "unrelated title", "unrelated body")?;
+    let unrelated_before = unrelated.commit_id.clone();
+    let advanced = repo.advance_remote_trunk("remote work", &unrelated.change_id)?;
+
+    let output = repo.run(&["sync", "1"])?;
+    assert_success("sync 1", &output);
+
+    let target_after = repo.change_at(&target.change_id)?;
+    let target_parent = repo.rev_commit_id(&format!("{}-", target_after.commit_id))?;
+    assert_eq!(
+        target_parent, advanced.commit_id,
+        "targeted sync should rebase the target stack onto fetched trunk"
+    );
+    assert_ne!(
+        target_after.commit_id, target.commit_id,
+        "target commit should be rewritten by sync"
+    );
+    assert_eq!(
+        repo.change_at(&unrelated.change_id)?.commit_id,
+        unrelated_before,
+        "targeted sync must not rebase the unrelated current checkout stack"
+    );
+    assert_ne!(
+        repo.rev_commit_id(&format!("{}-", unrelated_before))?,
+        advanced.commit_id,
+        "unrelated stack should remain based on the original trunk"
+    );
+    assert_eq!(
+        repo.git_remote_branch_target("main")?,
+        advanced.commit_id,
+        "sync should still move trunk to the fetched remote tip"
+    );
+    assert_eq!(
+        main.commit_id,
+        repo.rev_commit_id(&format!("{}-", unrelated_before))?
+    );
+    Ok(())
+}
+
+#[test]
+fn targeted_sync_submit_updates_only_target_stack() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-target-submit")?;
+    repo.init_main()?;
+    let target = repo.create_change("target", "target title", "target body")?;
+    let target_branch = branch_for("target-title", &target.change_id);
+    repo.set_bookmark(&target_branch, &target.commit_id)?;
+    repo.push_bookmark(&target_branch)?;
+    repo.seed_pr(1, &target_branch, "main", "target title", "target body")?;
+
+    repo.jj(&["new", "main"])?;
+    let unrelated = repo.create_change("unrelated", "unrelated title", "unrelated body")?;
+    let unrelated_branch = branch_for("unrelated-title", &unrelated.change_id);
+    repo.set_bookmark(&unrelated_branch, &unrelated.commit_id)?;
+    repo.push_bookmark(&unrelated_branch)?;
+    repo.seed_pr(
+        2,
+        &unrelated_branch,
+        "main",
+        "unrelated title",
+        "unrelated body",
+    )?;
+    repo.advance_remote_trunk("remote work", &unrelated.change_id)?;
+    repo.clear_gh_requests()?;
+
+    let output = repo.run(&[
+        "sync",
+        "https://github.com/owner/repo/pull/1",
+        "--submit",
+        "--yes",
+    ])?;
+    assert_success("sync 1 --submit", &output);
+
+    let target_after = repo.change_at(&target.change_id)?;
+    assert_eq!(
+        repo.git_remote_branch_target(&target_branch)?,
+        target_after.commit_id,
+        "targeted sync --submit should push the rebased target branch"
+    );
+    assert_eq!(
+        repo.git_remote_branch_target(&unrelated_branch)?,
+        unrelated.commit_id,
+        "targeted sync --submit must not push the unrelated branch"
+    );
+    assert!(repo.gh_request_matches(&["api", "-X", "PATCH", "repos/owner/repo/pulls/1"])?);
+    assert!(!repo.gh_request_matches(&["api", "-X", "PATCH", "repos/owner/repo/pulls/2"])?);
     Ok(())
 }
 

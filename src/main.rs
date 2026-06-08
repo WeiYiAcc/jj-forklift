@@ -435,6 +435,8 @@ struct SubmitOptions {
 
 #[derive(Debug, Args)]
 struct SyncOptions {
+    target: Option<String>,
+
     /// Also run submit after syncing. Sync does not submit by default.
     #[arg(long)]
     submit: bool,
@@ -715,10 +717,14 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             );
         }
         Commands::Sync(options) => {
+            let target_label = options.target.as_deref().unwrap_or(DEFAULT_STACK_REVSET);
+            let sync_revset = effective_sync_revset(runner, options.target.as_deref())
+                .map_err(|error| phase_error("resolve-sync-target", target_label, error))?;
             let summary = sync_stack(
                 runner,
                 &config,
-                DEFAULT_STACK_REVSET,
+                &sync_revset.revset,
+                sync_revset.target.as_ref(),
                 options.submit,
                 options.yes,
                 diagnostics,
@@ -980,6 +986,7 @@ fn phase_summary(phase: &str, object: &str) -> String {
         "startup-config" => "could not prepare jj config".to_owned(),
         "resolve-stack" => format!("could not resolve stack `{object}`"),
         "resolve-merge-target" => format!("could not resolve merge target `{object}`"),
+        "resolve-sync-target" => format!("could not resolve sync target `{object}`"),
         "merge-refresh-above" => format!("could not refresh stack above `{object}`"),
         "resolve-github" => format!("could not resolve GitHub context for `{object}`"),
         "resolve-pr" => format!("could not resolve PR for `{object}`"),
@@ -1630,8 +1637,29 @@ fn merge_revset_for_target(target_commit: &str) -> String {
     )
 }
 
+#[tracing::instrument(skip_all)]
+fn effective_sync_revset(runner: &impl CommandRunner, target: Option<&str>) -> Result<SyncRevset> {
+    let Some(target) = target else {
+        return Ok(SyncRevset {
+            revset: DEFAULT_STACK_REVSET.to_owned(),
+            target: None,
+        });
+    };
+    let target = resolve_merge_target(runner, target)?;
+    Ok(SyncRevset {
+        revset: merge_revset_for_target(&target.commit_id),
+        target: Some(target),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MergeRevset {
+    revset: String,
+    target: Option<MergeTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncRevset {
     revset: String,
     target: Option<MergeTarget>,
 }
@@ -4677,6 +4705,8 @@ fn merge_stack(
         .with_context(|| format!("phase=resolve-stack object={revset} empty stack"))?;
 
     if diagnostics.dry_run {
+        validate_trunk_fast_forward_over_stack(runner, config, &top.commit_id)
+            .map_err(|error| phase_error("merge-push", &config.trunk, error))?;
         diagnostics.plan_line(&format!(
             "- fast-forward trunk `{}` to {} ({})",
             config.trunk, top.change_id, top.commit_id
@@ -4775,20 +4805,7 @@ fn fast_forward_trunk_over_stack(
     top_commit: &str,
     diagnostics: Diagnostics,
 ) -> Result<()> {
-    let remote_git_ref = remote_git_ref(config);
-    let remote = git_rev_parse(runner, &remote_git_ref)?;
-    let is_ancestor = git_run(
-        runner,
-        &["merge-base", "--is-ancestor", remote.as_str(), top_commit],
-    )?;
-    if !is_ancestor.success {
-        bail!(
-            "trunk `{}` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift sync` first",
-            config.trunk,
-            top_commit,
-            remote
-        );
-    }
+    validate_trunk_fast_forward_over_stack(runner, config, top_commit)?;
 
     // jj's default `git.auto-local-bookmark = false` leaves a fetched remote
     // trunk bookmark untracked, and `jj bookmark set <trunk>` below then creates
@@ -4823,6 +4840,29 @@ fn fast_forward_trunk_over_stack(
             "failed-command=`{}` error={}",
             display_command("jj", &push_args),
             push.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+#[tracing::instrument(skip_all, fields(top = %top_commit))]
+fn validate_trunk_fast_forward_over_stack(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    top_commit: &str,
+) -> Result<()> {
+    let remote_git_ref = remote_git_ref(config);
+    let remote = git_rev_parse(runner, &remote_git_ref)?;
+    let is_ancestor = git_run(
+        runner,
+        &["merge-base", "--is-ancestor", remote.as_str(), top_commit],
+    )?;
+    if !is_ancestor.success {
+        bail!(
+            "trunk `{}` cannot fast-forward to {}: remote {} is not an ancestor; run `forklift sync` first",
+            config.trunk,
+            top_commit,
+            remote
         );
     }
     Ok(())
@@ -5685,6 +5725,7 @@ fn sync_stack(
     runner: &impl CommandRunner,
     config: &AppConfig,
     revset: &str,
+    target: Option<&MergeTarget>,
     submit: bool,
     yes: bool,
     diagnostics: Diagnostics,
@@ -5731,6 +5772,14 @@ fn sync_stack(
     if diagnostics.verbose {
         print_stack(&stack_resolution.owned);
     }
+    let submit_revset = if target.is_some() {
+        let target_change = stack_resolution.owned.last().with_context(|| {
+            format!("phase=resolve-stack object={revset} targeted sync resolved no owned changes")
+        })?;
+        merge_revset_for_target(&target_change.change_id)
+    } else {
+        revset.to_owned()
+    };
 
     diagnostics.phase("sync-frozen");
     let frozen_refresh =
@@ -5755,9 +5804,18 @@ fn sync_stack(
     } else {
         RebaseDestination::Trunk(config.trunk.clone())
     };
-    let rebased_roots =
+    let rebased_roots = if target.is_some() {
+        rebase_selected_stack(
+            runner,
+            revset,
+            &stack_resolution.owned,
+            destination,
+            diagnostics,
+        )
+    } else {
         rebase_stack_roots(runner, &stack_resolution.owned, destination, diagnostics)
-            .map_err(|error| phase_error("rebase-stack", revset, error))?;
+    }
+    .map_err(|error| phase_error("rebase-stack", revset, error))?;
 
     if !submit {
         return Ok(SyncSummary {
@@ -5777,8 +5835,8 @@ fn sync_stack(
     }
 
     diagnostics.phase("sync-submit");
-    let mut context = resolve_stack_context(runner, revset)
-        .map_err(|error| phase_error("sync-submit", revset, error))?;
+    let mut context = resolve_stack_context(runner, &submit_revset)
+        .map_err(|error| phase_error("sync-submit", &submit_revset, error))?;
     if let Some(github) = frozen_refresh.github {
         context.github = github;
     }
@@ -6175,6 +6233,42 @@ fn rebase_stack_roots(
     if diagnostics.dry_run {
         diagnostics.plan_line(&format!(
             "- rebase stack root {} ({}) onto {} `{}`",
+            root.change_id,
+            root.commit_id,
+            destination.label(),
+            destination.rev()
+        ));
+        diagnostics.plan_line(&format!("- {}", display_command("jj", &args)));
+        return Ok(1);
+    }
+
+    diagnostics.command("jj", &args);
+    let output = runner.run("jj", &args)?;
+    if !output.success {
+        bail!(
+            "failed-command=`{}` error={}",
+            display_command("jj", &args),
+            output.stderr.trim()
+        );
+    }
+
+    Ok(1)
+}
+
+fn rebase_selected_stack(
+    runner: &impl CommandRunner,
+    revset: &str,
+    stack: &[ResolvedChange],
+    destination: RebaseDestination,
+    diagnostics: Diagnostics,
+) -> Result<usize> {
+    let root = stack_root(stack)?;
+    let destination_rev = destination.rev().to_owned();
+    let args = ["rebase", "-r", revset, "-d", destination_rev.as_str()];
+
+    if diagnostics.dry_run {
+        diagnostics.plan_line(&format!(
+            "- rebase targeted stack root {} ({}) onto {} `{}`",
             root.change_id,
             root.commit_id,
             destination.label(),
