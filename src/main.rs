@@ -212,23 +212,19 @@ fn debug_log_filename(command_name: &str) -> String {
     format!("{timestamp_ms}-{}-{command_name}.log", process::id())
 }
 
-/// Emits an "info" status line to stdout (plain `ℹ`).
+/// Emits an "info" status line to stdout.
 macro_rules! ui_info {
     ($($arg:tt)*) => {{
         let __msg = format!($($arg)*);
-        println!("ℹ {}", __msg);
+        ui_info_line(&__msg);
     }};
 }
 
-/// Emits a "warning" status line to stderr (yellow `⚠`).
+/// Emits a "warning" status line to stderr.
 macro_rules! ui_warn {
     ($($arg:tt)*) => {{
         let __msg = format!($($arg)*);
-        if $crate::ui_color_enabled() {
-            eprintln!("{} {}", "⚠".yellow(), __msg);
-        } else {
-            eprintln!("⚠ {}", __msg);
-        }
+        ui_warn_line(&__msg);
     }};
 }
 
@@ -266,6 +262,24 @@ fn ui_hint(message: &str) {
         eprintln!("{} {message}", "hint:".cyan().bold());
     } else {
         eprintln!("hint: {message}");
+    }
+}
+
+fn ui_info_line(message: &str) {
+    let padded = format!("{:>width$}", "Info", width = PROGRESS_VERB_WIDTH);
+    if ui_color_enabled() {
+        println!("{} {message}", padded.cyan().bold());
+    } else {
+        println!("{padded} {message}");
+    }
+}
+
+fn ui_warn_line(message: &str) {
+    let padded = format!("{:>width$}", "Warning", width = PROGRESS_VERB_WIDTH);
+    if ui_color_enabled() {
+        eprintln!("{} {message}", padded.yellow().bold());
+    } else {
+        eprintln!("{padded} {message}");
     }
 }
 
