@@ -893,20 +893,20 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
             ) {
                 Ok(summary) => summary,
                 Err(error) if !cli.dry_run => {
-                    if let Some(submit_required) = error.downcast_ref::<MergeSubmitRequired>() {
+                    if let Some(submit_required) = find_merge_submit_required(&error) {
                         submit_before_retrying_merge(
                             runner,
                             &config,
                             &merge_revset.revset,
-                            submit_required,
+                            &submit_required,
                             diagnostics,
                         )?;
-                    } else if let Some(sync_required) = error.downcast_ref::<MergeSyncRequired>() {
+                    } else if let Some(sync_required) = find_merge_sync_required(&error) {
                         sync_submit_before_retrying_merge(
                             runner,
                             &config,
                             options.target.as_deref(),
-                            sync_required,
+                            &sync_required,
                             diagnostics,
                         )?;
                     } else {
@@ -1307,6 +1307,18 @@ fn diagnostic_from_error(error: &anyhow::Error) -> CliError {
         diagnostic.reason = Some(causes.join(": "));
     }
     diagnostic
+}
+
+fn find_merge_submit_required(error: &anyhow::Error) -> Option<MergeSubmitRequired> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<MergeSubmitRequired>().cloned())
+}
+
+fn find_merge_sync_required(error: &anyhow::Error) -> Option<MergeSyncRequired> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<MergeSyncRequired>().cloned())
 }
 
 fn diagnostic_from_message(message: &str) -> CliError {

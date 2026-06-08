@@ -750,6 +750,36 @@ fn merge_rewritten_local_change_points_to_submit() -> anyhow::Result<()> {
 }
 
 #[test]
+fn merge_unsubmitted_single_change_points_to_submit() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-unsubmitted-single")?;
+    repo.init_main()?;
+    let local_only = repo.create_change("local-only", "local only title", "local only body")?;
+
+    let output = repo.run(&["merge"])?;
+    assert!(
+        !output.status.success(),
+        "merge should fail when the only stack change is unsubmitted"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains(&format!(
+            "change {} is still local-only",
+            &local_only.change_id[..8]
+        )),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("resolution:\n  run `forklift submit --yes`, then `forklift merge`"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("resolution:\n  run `forklift submit --dry-run`"),
+        "single local-only merge should point to submit, not dry-run, stderr:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn merge_unsubmitted_child_explains_local_only_change() -> anyhow::Result<()> {
     let repo = TestRepo::new("merge-unsubmitted-child")?;
     repo.init_main()?;
