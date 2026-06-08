@@ -285,6 +285,15 @@ fn ui_warn_line(message: &str) {
     }
 }
 
+fn ui_conflict(message: &str) {
+    let padded = format!("{:>width$}", "Conflict", width = PROGRESS_VERB_WIDTH);
+    if ui_color_enabled() {
+        eprintln!("{} {message}", padded.red().bold());
+    } else {
+        eprintln!("{padded} {message}");
+    }
+}
+
 fn ui_progress_bar(verb: &str, message: &str, total: usize) -> Option<ProgressBar> {
     if total == 0 || !std::io::stderr().is_terminal() {
         return None;
@@ -841,8 +850,9 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
                 ui_progress(
                     "Finished",
                     &format!(
-                        "sync — {} roots rebased, submit {}, {} merged branch(es) cleaned",
+                        "sync — {} roots rebased, {} conflict(s), submit {}, {} merged branch(es) cleaned",
                         summary.rebased_roots,
+                        summary.conflicts,
                         if summary.submit_ran { "ran" } else { "skipped" },
                         summary.cleaned_branches
                     ),
@@ -1051,6 +1061,9 @@ fn run_command(cli: Cli, runner: &impl CommandRunner, cwd: &str) -> Result<()> {
 fn phase_error(phase: &str, object: impl Display, error: anyhow::Error) -> anyhow::Error {
     let object = object.to_string();
     let inner = diagnostic_from_error(&error);
+    if phase == "resolve-pr" && inner.message == "no current PR" {
+        return anyhow::Error::new(inner.detail("phase", phase).detail("object", object));
+    }
     let mut cli_error = CliError::new(phase_summary(phase, &object))
         .reason(reason_from_error(&error, &inner))
         .resolution(inner.resolution.unwrap_or_else(|| {
@@ -2396,6 +2409,7 @@ struct SyncSummary {
     rebased_roots: usize,
     submit_ran: bool,
     cleaned_branches: usize,
+    conflicts: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3026,7 +3040,7 @@ fn submit_before_retrying_merge(
             .reason(diagnostic.reason.unwrap_or_else(|| {
                 "merge found local changes that have not been submitted".to_owned()
             }))
-            .resolution("rerun `forklift submit --yes`, then rerun `forklift merge`")
+            .resolution("run `forklift submit --yes`, then `forklift merge`")
             .into());
     }
 
@@ -3066,7 +3080,7 @@ fn sync_submit_before_retrying_merge(
                     .reason
                     .unwrap_or_else(|| "merge found a stack that is not synced".to_owned()),
             )
-            .resolution(format!("rerun `{}`", merge_sync_command(target)))
+            .resolution(format!("run `{}`", merge_sync_command(target)))
             .into());
     }
 
@@ -4829,16 +4843,10 @@ fn diagnose_empty_targeted_merge(
     let target_label = target.label();
     let trunk = resolve_single_rev(runner, "trunk()")?;
     if git_commit_is_ancestor(runner, &target.commit_id, &trunk)? {
-        return Err(CliError::new(format!(
-            "cannot merge {target_label} because it is already reachable from trunk {}",
-            config.trunk
-        ))
-        .reason(format!(
-            "{target_label} resolves to {}, which is already in `{}`.",
-            target.commit_id, config.trunk
-        ))
-        .resolution("choose an unmerged owned PR, or run `forklift sync` to clean up local state")
-        .into());
+        return Err(CliError::new(format!("{target_label} is already on trunk"))
+            .reason(format!("{} is in `{}`", target.commit_id, config.trunk))
+            .resolution("choose an unmerged owned PR or run `forklift sync`")
+            .into());
     }
 
     let target_range_revset = format!("trunk()..{} & ~empty()", target.commit_id);
@@ -4849,54 +4857,47 @@ fn diagnose_empty_targeted_merge(
         if let Some(bookmark) =
             frozen_bookmark_covering_target(runner, &target.commit_id, frozen_bookmarks)?
         {
-            return Err(CliError::new(format!(
-                "cannot merge {target_label} because it is frozen in this checkout"
-            ))
-            .reason(format!(
-                "{target_label} resolves to {}, but that commit is covered by frozen bookmark `{}`. Frozen revisions are treated as dependencies, so forklift merge only considers owned mutable changes and the target range is empty.",
-                target.commit_id, bookmark.name
-            ))
-            .resolution(format!(
-                "unfreeze or get ownership of {target_label} before merging it"
-            ))
-            .into());
+            return Err(CliError::new(format!("{target_label} is frozen"))
+                .reason(format!(
+                    "{} is covered by `{}`",
+                    target.commit_id, bookmark.name
+                ))
+                .resolution(format!("unfreeze or get ownership of {target_label}"))
+                .into());
         }
 
-        return Err(CliError::new(format!(
-            "cannot merge {target_label} because it is immutable in this checkout"
-        ))
-        .reason(format!(
-            "{target_label} resolves to {}, but that commit is excluded by `immutable_heads()`.",
-            target.commit_id
-        ))
-        .resolution("choose an owned mutable stack change before merging it")
-        .into());
+        return Err(CliError::new(format!("{target_label} is immutable"))
+            .reason(format!(
+                "{} is excluded by `immutable_heads()`",
+                target.commit_id
+            ))
+            .resolution("choose an owned mutable stack change before merging it")
+            .into());
     }
 
     if !target_range.is_empty() {
-        return Err(CliError::new(format!(
-            "{target_label} is outside the active stack"
-        ))
-        .reason(format!(
-            "{target_label} resolves to {}, but it is not part of the owned mutable stack selected from `@`.",
-            target.commit_id
-        ))
-        .resolution(format!(
-            "move to the stack containing {target_label}, then run `forklift merge {}`",
-            target.input
-        ))
-        .into());
+        return Err(
+            CliError::new(format!("{target_label} is outside the active stack"))
+                .reason(format!(
+                    "{} is not in the stack selected from `@`",
+                    target.commit_id
+                ))
+                .resolution(format!(
+                    "move to the stack containing {target_label}, then run `forklift merge {}`",
+                    target.input
+                ))
+                .into(),
+        );
     }
 
-    Err(CliError::new(format!(
-        "cannot merge {target_label} because the target range is empty"
-    ))
-    .reason(format!(
-        "{target_label} resolves to {}, but `{narrowed_revset}` produced no owned non-empty changes.",
-        target.commit_id
-    ))
-    .resolution("choose an owned mutable non-empty PR before merging it")
-    .into())
+    Err(
+        CliError::new(format!("{target_label} has no owned changes"))
+            .reason(format!(
+                "`{narrowed_revset}` selected no owned non-empty changes"
+            ))
+            .resolution("choose an owned mutable non-empty PR before merging it")
+            .into(),
+    )
 }
 
 fn frozen_bookmark_covering_target<'a>(
@@ -6168,6 +6169,7 @@ fn sync_stack(
             rebased_roots: 0,
             submit_ran: false,
             cleaned_branches,
+            conflicts: 0,
         });
     }
     let stack_resolution = if stack.is_empty() {
@@ -6205,6 +6207,7 @@ fn sync_stack(
             rebased_roots: 0,
             submit_ran: false,
             cleaned_branches,
+            conflicts: 0,
         });
     }
 
@@ -6227,11 +6230,19 @@ fn sync_stack(
     }
     .map_err(|error| phase_error("rebase-stack", revset, error))?;
 
+    let conflicts = if diagnostics.dry_run {
+        0
+    } else {
+        report_sync_conflicts(runner, &submit_revset)
+            .map_err(|error| phase_error("resolve-stack", &submit_revset, error))?
+    };
+
     if !submit {
         return Ok(SyncSummary {
             rebased_roots,
             submit_ran: false,
             cleaned_branches,
+            conflicts,
         });
     }
 
@@ -6241,6 +6252,7 @@ fn sync_stack(
             rebased_roots,
             submit_ran: true,
             cleaned_branches,
+            conflicts,
         });
     }
 
@@ -6268,7 +6280,24 @@ fn sync_stack(
         rebased_roots,
         submit_ran: true,
         cleaned_branches,
+        conflicts,
     })
+}
+
+#[tracing::instrument(skip_all, fields(revset = %revset))]
+fn report_sync_conflicts(runner: &impl CommandRunner, revset: &str) -> Result<usize> {
+    let stack = resolve_stack(runner, revset)?;
+    let conflicts = stack
+        .iter()
+        .filter(|change| change.conflict)
+        .collect::<Vec<_>>();
+    for change in &conflicts {
+        ui_conflict(&format!(
+            "{} has unresolved merge conflicts",
+            change.change_id
+        ));
+    }
+    Ok(conflicts.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -156,10 +156,7 @@ fn pr_on_trunk_explains_there_is_no_current_pr() -> anyhow::Result<()> {
     let output = repo.run(&["pr"])?;
     assert!(!output.status.success(), "pr on trunk should fail");
     let stderr = stderr_of(&output);
-    assert!(
-        stderr.contains("error: no current PR"),
-        "stderr:\n{stderr}"
-    );
+    assert!(stderr.contains("error: no current PR"), "stderr:\n{stderr}");
     assert!(
         stderr.contains("reason:\n  current checkout is on trunk `main`"),
         "stderr:\n{stderr}"
@@ -696,8 +693,7 @@ fn merge_rewritten_local_change_points_to_submit() -> anyhow::Result<()> {
         "stderr:\n{stderr}"
     );
     assert!(
-        stderr
-            .contains("resolution:\n  run `forklift submit --yes`, then `forklift merge`"),
+        stderr.contains("resolution:\n  run `forklift submit --yes`, then `forklift merge`"),
         "expected submit confirmation guidance, stderr:\n{stderr}"
     );
     assert!(
@@ -757,6 +753,50 @@ fn sync_rebases_then_submits() -> anyhow::Result<()> {
     assert_eq!(parent, advanced.commit_id, "change should sit on new trunk");
     // And submitted.
     assert!(repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}
+
+#[test]
+fn sync_reports_rebase_conflicts() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-rebase-conflict")?;
+    let main = repo.init_main()?;
+
+    repo.jj(&["new"])?;
+    repo.write_file("file.txt", "local\n")?;
+    repo.jj(&["describe", "-m", "local edit"])?;
+    let local = repo.change_at("@")?;
+
+    repo.jj(&["new", "main"])?;
+    repo.write_file("file.txt", "remote\n")?;
+    repo.jj(&["describe", "-m", "remote edit"])?;
+    let remote = repo.change_at("@")?;
+    repo.jj(&["bookmark", "set", "main", "-r", "@"])?;
+    repo.push_bookmark("main")?;
+    repo.jj(&[
+        "bookmark",
+        "set",
+        "--allow-backwards",
+        "main",
+        "-r",
+        &main.commit_id,
+    ])?;
+    repo.jj(&["edit", &local.change_id])?;
+
+    let output = repo.run(&["sync"])?;
+    assert_success("sync", &output);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains(&format!(
+            "Conflict {} has unresolved merge conflicts",
+            local.change_id
+        )),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Finished sync — 1 roots rebased, 1 conflict(s), submit skipped"),
+        "stderr:\n{stderr}"
+    );
+    assert_eq!(repo.git_remote_branch_target("main")?, remote.commit_id);
     Ok(())
 }
 
