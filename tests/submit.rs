@@ -39,6 +39,65 @@ fn one_change_submit_creates_pr() -> anyhow::Result<()> {
 }
 
 #[test]
+fn submit_rejects_undescribed_empty_spacer_below_stack() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-undescribed-spacer")?;
+    repo.init_main()?;
+    // The classic leftover `jj new`: an empty, undescribed commit between `main`
+    // and the stack root. `init_main` already leaves an empty undescribed commit
+    // on `main`; stacking one further up turns it into a spacer below the change.
+    // The stack revset (`~empty()`) skips it, but jj refuses to push an
+    // undescribed commit, so submit must reject it up front — before any bookmark
+    // is pushed — with an actionable message, not abort mid-push.
+    repo.jj(&["new"])?; // fresh empty working copy above the undescribed spacer
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 7)?;
+
+    let output = repo.run(&["submit", "--yes"])?;
+    assert!(
+        !output.status.success(),
+        "submit must reject an undescribed empty spacer"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("empty commit with no description sits between base `main`"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("jj abandon"),
+        "error should suggest abandoning the spacer\nstderr:\n{stderr}"
+    );
+    // Rejected before any mutation: no PR created, no branch pushed.
+    assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    assert!(!repo.remote_branch_exists(&branch)?);
+    Ok(())
+}
+
+#[test]
+fn submit_tolerates_described_empty_spacer_below_stack() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-described-spacer")?;
+    repo.init_main()?;
+    // An empty but *described* commit between `main` and the stack root is also
+    // skipped by the stack revset, yet it pushes fine, so submit must tolerate
+    // it rather than fail on the merge-base mismatch. Describe the empty commit
+    // `init_main` leaves on `main`, then stack the change above it.
+    repo.jj(&["describe", "-m", "empty spacer"])?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 7)?;
+
+    let output = repo.run(&["submit", "--yes"])?;
+    assert_success("submit", &output);
+
+    // The PR was created against trunk despite the empty spacer between them.
+    assert_eq!(repo.git_remote_branch_target(&branch)?, change.commit_id);
+    let pr = repo.stored_pr(7)?;
+    assert_eq!(pr["headRefName"], json!(branch));
+    assert_eq!(pr["baseRefName"], json!("main"));
+    Ok(())
+}
+
+#[test]
 fn submit_requires_confirmation_before_mutation() -> anyhow::Result<()> {
     let repo = TestRepo::new("submit-confirm")?;
     repo.init_main()?;

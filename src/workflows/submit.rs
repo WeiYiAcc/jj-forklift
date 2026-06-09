@@ -828,47 +828,63 @@ pub(crate) fn validate_submit_bases(
     let Some(root) = stack.first() else {
         bail!("cannot submit an empty stack");
     };
-    let root_parent = root.parent_ids.first().with_context(|| {
-        format!(
-            "change {} ({}) has no parent to compare against trunk `{}`",
-            root.change_id, root.commit_id, config.trunk
-        )
-    })?;
-    let (base_label, merge_base_target, expected_parent) = frozen_dependencies
-        .last()
-        .map(|dependency| {
-            (
-                dependency.bookmark.name.as_str(),
-                dependency.change.commit_id.as_str(),
-                dependency.change.commit_id.as_str(),
-            )
-        })
-        .unwrap_or((
-            config.trunk.as_str(),
-            config.trunk.as_str(),
-            root_parent.as_str(),
-        ));
-    if root_parent != expected_parent {
+    let (base_label, base_tip) = match frozen_dependencies.last() {
+        Some(dependency) => (
+            dependency.bookmark.name.clone(),
+            dependency.change.commit_id.clone(),
+        ),
+        None => (config.trunk.clone(), resolve_single_rev(runner, &config.trunk)?),
+    };
+    // The stack revset excludes empty commits (`~empty()`), so the resolved base
+    // can sit one or more empty spacer commits below the stack root (e.g. a
+    // leftover `jj new`). Validate by ancestry — the base must be an ancestor of
+    // the root — rather than by strict parent adjacency, which would spuriously
+    // fail on those skipped empties. The revset guarantees every *non-empty*
+    // commit between the base and the root is already part of the stack, so
+    // anything sitting between them here is empty and harmless to submit.
+    let root_merge_base = merge_base(runner, &root.commit_id, &base_tip)?;
+    if root_merge_base != base_tip {
         bail!(CliError::new(format!(
-            "submit base validation failed for {} ({}): jj parent is {}, expected base {} at {}",
+            "submit base validation failed for {} ({}): base `{}` ({}) is not an ancestor of the stack root (merge-base is {})",
             short_change_id(&root.change_id),
             short_commit_id(&root.commit_id),
-            short_commit_id(root_parent),
             base_label,
-            short_commit_id(expected_parent)
+            short_commit_id(&base_tip),
+            short_commit_id(&root_merge_base),
         )));
     }
-    let root_merge_base = merge_base(runner, &root.commit_id, merge_base_target)?;
-    if root_merge_base != expected_parent {
-        bail!(CliError::new(format!(
-            "submit base validation failed for {} ({}): merge-base with base `{}` ({}) is {}, expected {}",
-            short_change_id(&root.change_id),
-            short_commit_id(&root.commit_id),
-            base_label,
-            short_commit_id(merge_base_target),
-            short_commit_id(&root_merge_base),
-            short_commit_id(expected_parent)
-        )));
+
+    // The stack revset excludes empty commits, so an empty spacer between the
+    // base and the stack root rides along in the pushed range without being a
+    // stack member. jj refuses to push a commit with no description, so an
+    // *undescribed* spacer would abort mid-push (`push-refs`) after earlier
+    // bookmarks already landed. Catch it here, before any mutation. Empty
+    // *described* spacers push fine and are left alone.
+    let undescribed_spacers = list_commit_ids(
+        runner,
+        &format!(
+            "{base}..{root} & ~{root} & description(exact:\"\")",
+            base = base_tip,
+            root = root.commit_id
+        ),
+    )?;
+    if !undescribed_spacers.is_empty() {
+        let revs = undescribed_spacers
+            .iter()
+            .map(|id| short_commit_id(id))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let noun = if undescribed_spacers.len() == 1 {
+            "an empty commit with no description sits"
+        } else {
+            "empty commits with no description sit"
+        };
+        bail!(
+            CliError::new(format!(
+                "{noun} between base `{base_label}` and the stack root; jj cannot push it"
+            ))
+            .resolution(format!("run `jj abandon {revs}` to drop the empty spacer"))
+        );
     }
 
     for pair in stack.windows(2) {
@@ -930,6 +946,30 @@ pub(crate) fn validate_submit_descriptions(stack: &[ResolvedChange]) -> Result<(
         CliError::new(format!("{count} {noun} no description"))
             .resolution(format!("run `jj describe -r {revs}`"))
     );
+}
+
+/// Lists the commit ids matching `revset`, in `jj log` order. Returns an empty
+/// vec when nothing matches (unlike [`resolve_single_rev`], which requires
+/// exactly one).
+#[tracing::instrument(level = "trace", skip_all, fields(revset = %revset))]
+pub(crate) fn list_commit_ids(runner: &impl CommandRunner, revset: &str) -> Result<Vec<String>> {
+    let template = "commit_id ++ \"\\n\"";
+    let args = ["log", "--no-graph", "-r", revset, "-T", template];
+    let output = runner.run("jj", &args)?;
+    if !output.success {
+        bail!(
+            "failed-command=`{}` error={}",
+            display_command("jj", &args),
+            output.stderr.trim()
+        );
+    }
+    Ok(output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 #[tracing::instrument(level = "trace", skip_all, fields(left = %left, right = %right))]
