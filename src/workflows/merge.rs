@@ -137,13 +137,15 @@ pub(crate) fn diagnose_empty_targeted_merge(
         if let Some(bookmark) =
             frozen_bookmark_covering_target(runner, &target.commit_id, frozen_bookmarks)?
         {
-            return Err(CliError::new(format!("{target_label} is frozen"))
-                .reason(format!(
-                    "{} is covered by `{}`",
-                    target.commit_id, bookmark.name
-                ))
-                .resolution(format!("unfreeze or get ownership of {target_label}"))
-                .into());
+            return Err(MergeUnfreezeRequired::new(
+                target.input.clone(),
+                format!("{} is covered by `{}`", target.commit_id, bookmark.name),
+                format!(
+                    "run `forklift unfreeze {}`, then rerun `forklift merge {}`",
+                    target.input, target.input
+                ),
+            )
+            .into());
         }
 
         return Err(CliError::new(format!("{target_label} is immutable"))
@@ -185,6 +187,13 @@ pub(crate) fn frozen_bookmark_covering_target<'a>(
     target_commit: &str,
     frozen_bookmarks: &'a [FrozenBookmark],
 ) -> Result<Option<&'a FrozenBookmark>> {
+    if let Some(bookmark) = frozen_bookmarks
+        .iter()
+        .find(|bookmark| bookmark.commit_id == target_commit)
+    {
+        return Ok(Some(bookmark));
+    }
+
     for bookmark in frozen_bookmarks {
         if git_commit_is_ancestor(runner, target_commit, &bookmark.commit_id)? {
             return Ok(Some(bookmark));

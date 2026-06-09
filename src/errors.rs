@@ -188,6 +188,41 @@ impl Display for MergeSyncRequired {
 
 impl Error for MergeSyncRequired {}
 
+#[derive(Debug, Clone)]
+pub(super) struct MergeUnfreezeRequired {
+    pub(super) target: String,
+    pub(super) reason: String,
+    pub(super) resolution: String,
+}
+
+impl MergeUnfreezeRequired {
+    pub(super) fn new(
+        target: impl Into<String>,
+        reason: impl Into<String>,
+        resolution: impl Into<String>,
+    ) -> Self {
+        Self {
+            target: target.into(),
+            reason: reason.into(),
+            resolution: resolution.into(),
+        }
+    }
+
+    pub(super) fn cli_error(&self) -> CliError {
+        CliError::new("merge target is frozen")
+            .reason(self.reason.clone())
+            .resolution(self.resolution.clone())
+    }
+}
+
+impl Display for MergeUnfreezeRequired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.cli_error().fmt(formatter)
+    }
+}
+
+impl Error for MergeUnfreezeRequired {}
+
 pub(super) fn phase_summary_for_error(phase: &str) -> &'static str {
     match phase {
         "merge-pr-lookup" => "failed during merge-pr-lookup",
@@ -238,6 +273,9 @@ pub(super) fn diagnostic_from_error(error: &anyhow::Error) -> CliError {
         if let Some(sync_required) = cause.downcast_ref::<MergeSyncRequired>() {
             return sync_required.cli_error();
         }
+        if let Some(unfreeze_required) = cause.downcast_ref::<MergeUnfreezeRequired>() {
+            return unfreeze_required.cli_error();
+        }
         if let Some(cli_error) = cause.downcast_ref::<CliError>() {
             return cli_error.clone();
         }
@@ -266,6 +304,12 @@ pub(super) fn find_merge_sync_required(error: &anyhow::Error) -> Option<MergeSyn
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<MergeSyncRequired>().cloned())
+}
+
+pub(super) fn find_merge_unfreeze_required(error: &anyhow::Error) -> Option<MergeUnfreezeRequired> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<MergeUnfreezeRequired>().cloned())
 }
 
 pub(super) fn diagnostic_from_message(message: &str) -> CliError {

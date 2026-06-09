@@ -58,6 +58,8 @@ pub(crate) fn run(
                     &sync_required,
                     diagnostics,
                 )?;
+            } else if let Some(unfreeze_required) = find_merge_unfreeze_required(&error) {
+                unfreeze_before_retrying_merge(runner, &config, &unfreeze_required, diagnostics)?;
             } else {
                 return Err(error);
             }

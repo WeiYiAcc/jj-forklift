@@ -322,6 +322,55 @@ pub(crate) fn sync_submit_before_retrying_merge(
     Ok(())
 }
 
+pub(crate) fn unfreeze_before_retrying_merge(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    unfreeze_required: &MergeUnfreezeRequired,
+    diagnostics: Diagnostics,
+) -> Result<()> {
+    let unfreeze_command = format!("forklift unfreeze {}", unfreeze_required.target);
+    let merge_command = format!("forklift merge {}", unfreeze_required.target);
+    if !io::stdin().is_terminal() {
+        let diagnostic = unfreeze_required.cli_error();
+        return Err(CliError::new(diagnostic.message)
+            .reason(
+                diagnostic
+                    .reason
+                    .unwrap_or_else(|| "merge target is frozen".to_owned()),
+            )
+            .resolution(format!(
+                "run `{unfreeze_command}`, then rerun `{merge_command}`"
+            ))
+            .into());
+    }
+
+    tracing::debug!(
+        target = %unfreeze_required.target,
+        reason = %unfreeze_required.reason,
+        "merge requires unfreeze before retry"
+    );
+    eprintln!("Merge target is frozen.");
+    eprint!("Run `{unfreeze_command}` now, then retry merge? [y/N] ");
+    io::stderr()
+        .flush()
+        .context("flush merge unfreeze prompt")?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("read merge unfreeze prompt")?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+        return Err(CliError::new("merge cancelled")
+            .reason("unfreeze was not run")
+            .resolution(format!(
+                "run `{unfreeze_command}`, then rerun `{merge_command}`"
+            ))
+            .into());
+    }
+
+    unfreeze_stack(runner, config, &unfreeze_required.target, diagnostics)?;
+    Ok(())
+}
+
 pub(crate) fn print_submit_plan_line(line: &str) {
     if ui_color_enabled() {
         if let Some((label, rest)) = line.split_once(':') {

@@ -289,7 +289,7 @@ fn targeted_merge_errors_when_target_is_frozen() -> anyhow::Result<()> {
     );
     let stderr = stderr_of(&output);
     assert!(
-        stderr.contains("error: PR #1 is frozen"),
+        stderr.contains("error: merge target is frozen"),
         "stderr:\n{stderr}"
     );
     assert!(
@@ -297,7 +297,7 @@ fn targeted_merge_errors_when_target_is_frozen() -> anyhow::Result<()> {
         "stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("resolution:\n  unfreeze or get ownership of PR #1"),
+        stderr.contains("resolution:\n  run `forklift unfreeze 1`, then rerun `forklift merge 1`"),
         "stderr:\n{stderr}"
     );
     assert_eq!(
