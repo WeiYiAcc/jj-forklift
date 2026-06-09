@@ -47,18 +47,21 @@ pub(crate) fn get_stack(
     fetch_get_branches(runner, config, &prs, diagnostics)?;
     let pr_count = prs.len();
 
-    let Some(top_pr) = prs.last() else {
+    if prs.is_empty() {
         bail!("stack comment did not resolve any PRs");
-    };
-    let top_frozen = frozen_bookmark_name(top_pr.number);
-    let next_command = format!("jj new {top_frozen}");
+    }
+    // Land the working copy on the PR the user targeted, not the stack tip:
+    // `forklift get <pr>` should leave you at that PR's code. The frozen rev is
+    // immutable, so we new an empty child above it.
+    let target_frozen = frozen_bookmark_name(target_pr_number);
+    let next_command = format!("jj new {target_frozen}");
     if diagnostics.dry_run {
         update_get_frozen_bookmarks(runner, &prs, diagnostics)?;
         if auto_edit {
             diagnostics.plan_line(&format!("- move working copy: {next_command}"));
         } else {
             diagnostics.plan_line(&format!(
-                "- skip editing: run `{next_command}` to start editing above the fetched stack"
+                "- skip editing: run `{next_command}` to start editing above the targeted PR"
             ));
         }
         diagnostics.plan_line(
@@ -97,11 +100,11 @@ pub(crate) fn get_stack(
 
     let edited = if auto_edit {
         diagnostics.phase("edit-stack");
-        edit_get_stack(runner, &top_frozen, diagnostics)
-            .map_err(|error| phase_error("edit-stack", &top_frozen, error))?;
+        edit_get_stack(runner, &target_frozen, diagnostics)
+            .map_err(|error| phase_error("edit-stack", &target_frozen, error))?;
         true
     } else {
-        ui_info!("skip editing: run `{next_command}` to start editing above the fetched stack");
+        ui_info!("skip editing: run `{next_command}` to start editing above the targeted PR");
         false
     };
 

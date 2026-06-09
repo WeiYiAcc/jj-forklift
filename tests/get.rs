@@ -116,7 +116,7 @@ fn get_fetches_stack_from_comment_and_writes_cache() -> anyhow::Result<()> {
     );
     assert!(
         stdout_of(&output).contains(
-            "skip editing: run `jj new forklift/frozen/pr-12` to start editing above the fetched stack"
+            "skip editing: run `jj new forklift/frozen/pr-12` to start editing above the targeted PR"
         ),
         "stdout:\n{}",
         stdout_of(&output)
@@ -128,6 +128,64 @@ fn get_fetches_stack_from_comment_and_writes_cache() -> anyhow::Result<()> {
     assert_eq!(
         repo.cache_entry(&stack[1].change_id)?["pr_number"],
         json!(12)
+    );
+    Ok(())
+}
+
+#[test]
+fn get_lands_working_copy_on_targeted_mid_stack_pr() -> anyhow::Result<()> {
+    let repo = TestRepo::new("get-mid-stack")?;
+    repo.init_main()?;
+    let stack = repo.create_linear_stack(2)?;
+    let bottom = branch_for("change-1-title", &stack[0].change_id);
+    let top = branch_for("change-2-title", &stack[1].change_id);
+    repo.set_bookmark(&bottom, &stack[0].commit_id)?;
+    repo.set_bookmark(&top, &stack[1].commit_id)?;
+    repo.push_bookmark(&bottom)?;
+    repo.push_bookmark(&top)?;
+    repo.seed_pr(11, &bottom, "main", "change 1 title", "change 1 body")?;
+    repo.seed_pr(12, &top, &bottom, "change 2 title", "change 2 body")?;
+    let rows = [
+        (
+            stack[0].change_id.as_str(),
+            11u64,
+            bottom.as_str(),
+            "main",
+            "change 1 title",
+        ),
+        (
+            stack[1].change_id.as_str(),
+            12u64,
+            top.as_str(),
+            bottom.as_str(),
+            "change 2 title",
+        ),
+    ];
+    // The stack comment lives on the targeted (bottom) PR so `get 11` can resolve
+    // the whole stack from it.
+    repo.seed_comment(
+        11,
+        201,
+        &common::stack_comment_body(&rows, &stack[0].change_id),
+    )?;
+
+    let output = repo.run(&["get", "11"])?;
+    assert_success("get 11", &output);
+
+    // The entire stack is fetched and frozen...
+    assert_eq!(
+        repo.bookmark_target("forklift/frozen/pr-11")?,
+        stack[0].commit_id
+    );
+    assert_eq!(
+        repo.bookmark_target("forklift/frozen/pr-12")?,
+        stack[1].commit_id
+    );
+    // ...but the working copy lands on the targeted bottom PR, not the stack tip.
+    assert_eq!(
+        repo.rev_commit_id("@-")?,
+        stack[0].commit_id,
+        "get should new @ on top of the targeted PR's frozen rev, not the tip"
     );
     Ok(())
 }
