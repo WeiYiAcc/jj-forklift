@@ -7799,14 +7799,13 @@ fn stack_comment_body_with_frozen(
         .iter()
         .find(|(change_id, _)| change_id == current_change_id)
     {
+        body.push_str(&format!("Get stack: `forklift get {}`\n", entry.pr_number));
+        body.push_str("Push local edits: `forklift submit`\n");
         body.push_str(&format!(
-            "Check out this stack: `forklift get {}`\n",
+            "Merge when ready: `forklift merge {}`\n",
             entry.pr_number
         ));
     }
-    body.push_str("Pull/update this stack: `forklift sync`\n");
-    body.push_str("Publish local edits: `forklift submit`\n");
-    body.push_str("Merge when ready: `forklift merge`\n");
 
     body
 }
@@ -7832,14 +7831,12 @@ fn repaired_stack_comment_body(
     body.push_str(&format!("- {trunk}\n"));
     body.push('\n');
     if prs.iter().any(|pr| pr.number == current_pr_number) {
+        body.push_str(&format!("Get stack: `forklift get {current_pr_number}`\n"));
+        body.push_str("Push local edits: `forklift submit`\n");
         body.push_str(&format!(
-            "Check out this stack: `forklift get {}`\n",
-            current_pr_number
+            "Merge when ready: `forklift merge {current_pr_number}`\n"
         ));
     }
-    body.push_str("Pull/update this stack: `forklift sync`\n");
-    body.push_str("Publish local edits: `forklift submit`\n");
-    body.push_str("Merge when ready: `forklift merge`\n");
 
     body
 }
