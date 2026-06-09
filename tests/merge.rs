@@ -310,6 +310,51 @@ fn targeted_merge_errors_when_target_is_frozen() -> anyhow::Result<()> {
 }
 
 #[test]
+fn targeted_merge_reports_all_frozen_descendants_covering_target() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-target-frozen-descendants")?;
+    repo.init_main()?;
+    let main = repo.bookmark_target("main")?;
+    let stack = repo.create_linear_stack(3)?;
+    let bottom = branch_for("change-1-title", &stack[0].change_id);
+    let middle = branch_for("change-2-title", &stack[1].change_id);
+    let top = branch_for("change-3-title", &stack[2].change_id);
+    repo.set_bookmark(&bottom, &stack[0].commit_id)?;
+    repo.set_bookmark(&middle, &stack[1].commit_id)?;
+    repo.set_bookmark(&top, &stack[2].commit_id)?;
+    repo.push_bookmark(&bottom)?;
+    repo.push_bookmark(&middle)?;
+    repo.push_bookmark(&top)?;
+    repo.seed_pr(11, &bottom, "main", "change 1 title", "change 1 body")?;
+    repo.seed_pr(12, &middle, &bottom, "change 2 title", "change 2 body")?;
+    repo.seed_pr(13, &top, &middle, "change 3 title", "change 3 body")?;
+    repo.set_bookmark("forklift/frozen/pr-12", &stack[1].commit_id)?;
+    repo.set_bookmark("forklift/frozen/pr-13", &stack[2].commit_id)?;
+
+    let output = repo.run(&["merge", "11"])?;
+    assert!(
+        !output.status.success(),
+        "targeted merge should fail non-interactively while frozen descendants cover the target"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("covered by `forklift/frozen/pr-13`, `forklift/frozen/pr-12`"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "resolution:\n  run `forklift unfreeze 13`, then `forklift unfreeze 12`, then rerun `forklift merge 11`"
+        ),
+        "stderr:\n{stderr}"
+    );
+    assert_eq!(
+        repo.git_remote_branch_target("main")?,
+        main,
+        "merge must not advance trunk"
+    );
+    Ok(())
+}
+
+#[test]
 fn targeted_merge_errors_when_target_is_already_in_trunk() -> anyhow::Result<()> {
     let repo = TestRepo::new("merge-target-in-trunk")?;
     repo.init_main()?;

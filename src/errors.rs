@@ -191,6 +191,7 @@ impl Error for MergeSyncRequired {}
 #[derive(Debug, Clone)]
 pub(super) struct MergeUnfreezeRequired {
     pub(super) target: String,
+    pub(super) unfreeze_targets: Vec<String>,
     pub(super) reason: String,
     pub(super) resolution: String,
 }
@@ -198,11 +199,13 @@ pub(super) struct MergeUnfreezeRequired {
 impl MergeUnfreezeRequired {
     pub(super) fn new(
         target: impl Into<String>,
+        unfreeze_targets: Vec<String>,
         reason: impl Into<String>,
         resolution: impl Into<String>,
     ) -> Self {
         Self {
             target: target.into(),
+            unfreeze_targets,
             reason: reason.into(),
             resolution: resolution.into(),
         }

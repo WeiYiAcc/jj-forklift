@@ -134,15 +134,26 @@ pub(crate) fn diagnose_empty_targeted_merge(
     let immutable_target_revset = format!("{} & ::(immutable_heads() | root())", target.commit_id);
     let immutable_target = resolve_stack(runner, &immutable_target_revset)?;
     if !immutable_target.is_empty() {
-        if let Some(bookmark) =
-            frozen_bookmark_covering_target(runner, &target.commit_id, frozen_bookmarks)?
-        {
+        let covering_bookmarks =
+            frozen_bookmarks_covering_target(runner, &target.commit_id, frozen_bookmarks)?;
+        if !covering_bookmarks.is_empty() {
+            let unfreeze_targets = covering_bookmarks
+                .iter()
+                .map(|bookmark| bookmark.pr_number.to_string())
+                .collect::<Vec<_>>();
+            let bookmark_names = covering_bookmarks
+                .iter()
+                .map(|bookmark| format!("`{}`", bookmark.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let unfreeze_commands = merge_unfreeze_commands(&unfreeze_targets);
             return Err(MergeUnfreezeRequired::new(
                 target.input.clone(),
-                format!("{} is covered by `{}`", target.commit_id, bookmark.name),
+                unfreeze_targets,
+                format!("{} is covered by {bookmark_names}", target.commit_id),
                 format!(
-                    "run `forklift unfreeze {}`, then rerun `forklift merge {}`",
-                    target.input, target.input
+                    "run {unfreeze_commands}, then rerun `forklift merge {}`",
+                    target.input
                 ),
             )
             .into());
@@ -182,24 +193,68 @@ pub(crate) fn diagnose_empty_targeted_merge(
     )
 }
 
-pub(crate) fn frozen_bookmark_covering_target<'a>(
+pub(crate) fn frozen_bookmarks_covering_target<'a>(
     runner: &impl CommandRunner,
     target_commit: &str,
     frozen_bookmarks: &'a [FrozenBookmark],
-) -> Result<Option<&'a FrozenBookmark>> {
+) -> Result<Vec<&'a FrozenBookmark>> {
+    let mut covering = Vec::new();
     if let Some(bookmark) = frozen_bookmarks
         .iter()
         .find(|bookmark| bookmark.commit_id == target_commit)
     {
-        return Ok(Some(bookmark));
+        covering.push(bookmark);
     }
 
     for bookmark in frozen_bookmarks {
-        if git_commit_is_ancestor(runner, target_commit, &bookmark.commit_id)? {
-            return Ok(Some(bookmark));
+        if bookmark.commit_id != target_commit
+            && git_commit_is_ancestor(runner, target_commit, &bookmark.commit_id)?
+        {
+            covering.push(bookmark);
         }
     }
-    Ok(None)
+    sort_frozen_bookmarks_top_down(runner, &mut covering)?;
+    Ok(covering)
+}
+
+pub(crate) fn sort_frozen_bookmarks_top_down(
+    runner: &impl CommandRunner,
+    bookmarks: &mut Vec<&FrozenBookmark>,
+) -> Result<()> {
+    let mut ordered = Vec::new();
+    while !bookmarks.is_empty() {
+        let mut top_index = None;
+        for (index, candidate) in bookmarks.iter().enumerate() {
+            let has_frozen_child = bookmarks
+                .iter()
+                .enumerate()
+                .filter(|(other_index, _)| *other_index != index)
+                .map(|(_, other)| {
+                    git_commit_is_ancestor(runner, &candidate.commit_id, &other.commit_id)
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .any(|is_ancestor| is_ancestor);
+            if !has_frozen_child {
+                top_index = Some(index);
+                break;
+            }
+        }
+        let Some(index) = top_index else {
+            bail!("frozen bookmarks covering merge target contain an ancestry cycle");
+        };
+        ordered.push(bookmarks.remove(index));
+    }
+    *bookmarks = ordered;
+    Ok(())
+}
+
+pub(crate) fn merge_unfreeze_commands(targets: &[String]) -> String {
+    targets
+        .iter()
+        .map(|target| format!("`forklift unfreeze {target}`"))
+        .collect::<Vec<_>>()
+        .join(", then ")
 }
 
 #[tracing::instrument(skip_all, fields(revset = %revset))]
