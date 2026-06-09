@@ -106,7 +106,14 @@ pub(crate) fn sync_stack(
             .map_err(|error| phase_error("resolve-stack", &submit_revset, error))?
     };
 
-    if !submit {
+    let prompted_submit = if submit {
+        false
+    } else {
+        prompt_submit_after_sync(rebased_roots, conflicts, diagnostics.dry_run)?
+    };
+    let should_submit = submit || prompted_submit;
+    let submit_yes = yes || prompted_submit;
+    if !should_submit {
         return Ok(SyncSummary {
             rebased_roots,
             submit_ran: false,
@@ -139,7 +146,7 @@ pub(crate) fn sync_stack(
         runner,
         config,
         &context,
-        yes,
+        submit_yes,
         "forklift sync --submit --yes",
         diagnostics,
     )
@@ -151,6 +158,24 @@ pub(crate) fn sync_stack(
         cleaned_branches,
         conflicts,
     })
+}
+
+pub(crate) fn prompt_submit_after_sync(
+    rebased_roots: usize,
+    conflicts: usize,
+    dry_run: bool,
+) -> Result<bool> {
+    if dry_run || rebased_roots == 0 || conflicts > 0 || !io::stdin().is_terminal() {
+        return Ok(false);
+    }
+
+    eprint!("Submit updated PRs now? [y/N] ");
+    io::stderr().flush().context("flush sync submit prompt")?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("read sync submit prompt")?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
 }
 
 #[tracing::instrument(skip_all, fields(revset = %revset))]

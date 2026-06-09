@@ -26,6 +26,40 @@ fn sync_rebases_then_submits() -> anyhow::Result<()> {
 }
 
 #[test]
+fn sync_prompts_to_submit_clean_rebase() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-prompt-submit")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+    let submitted = repo.change_at(&change.change_id)?;
+    repo.advance_remote_trunk("remote work", &change.change_id)?;
+    repo.clear_gh_requests()?;
+
+    let output = repo.run_tty_with_stdin(&["sync"], "y\n")?;
+    assert_success("sync", &output);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("Submit updated PRs now? [y/N]"),
+        "stdout:\n{stdout}"
+    );
+
+    let rebased = repo.change_at(&change.change_id)?;
+    assert_ne!(
+        rebased.commit_id, submitted.commit_id,
+        "sync should rebase the change before submitting"
+    );
+    assert_eq!(
+        repo.git_remote_branch_target(&branch)?,
+        rebased.commit_id,
+        "prompted submit should push the rebased PR branch"
+    );
+    assert!(repo.gh_request_matches(&["api", "-X", "PATCH", "repos/owner/repo/pulls/9"])?);
+    Ok(())
+}
+
+#[test]
 fn sync_reports_rebase_conflicts() -> anyhow::Result<()> {
     let repo = TestRepo::new("sync-rebase-conflict")?;
     let main = repo.init_main()?;
