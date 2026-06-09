@@ -297,7 +297,9 @@ fn targeted_merge_errors_when_target_is_frozen() -> anyhow::Result<()> {
         "stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("resolution:\n  run `forklift unfreeze 1`, then rerun `forklift merge 1`"),
+        stderr.contains(
+            "resolution:\n  run `forklift unfreeze 1`, then `forklift sync 1 --submit --yes`, then rerun `forklift merge 1`"
+        ),
         "stderr:\n{stderr}"
     );
     assert_eq!(
@@ -342,7 +344,7 @@ fn targeted_merge_reports_all_frozen_descendants_covering_target() -> anyhow::Re
     );
     assert!(
         stderr.contains(
-            "resolution:\n  run `forklift unfreeze 13`, then `forklift unfreeze 12`, then rerun `forklift merge 11`"
+            "resolution:\n  run `forklift unfreeze 13`, then `forklift unfreeze 12`, then `forklift sync 11 --submit --yes`, then rerun `forklift merge 11`"
         ),
         "stderr:\n{stderr}"
     );
@@ -351,6 +353,51 @@ fn targeted_merge_reports_all_frozen_descendants_covering_target() -> anyhow::Re
         main,
         "merge must not advance trunk"
     );
+    Ok(())
+}
+
+#[test]
+fn targeted_merge_unfreezes_then_sync_submits_before_retry() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-unfreeze-sync-submit")?;
+    repo.init_main()?;
+    let stack = repo.create_linear_stack(2)?;
+    let bottom = branch_for("change-1-title", &stack[0].change_id);
+    let top = branch_for("change-2-title", &stack[1].change_id);
+    repo.set_bookmark(&bottom, &stack[0].commit_id)?;
+    repo.set_bookmark(&top, &stack[1].commit_id)?;
+    repo.push_bookmark(&bottom)?;
+    repo.push_bookmark(&top)?;
+    repo.seed_pr(11, &bottom, "main", "change 1 title", "change 1 body")?;
+    repo.seed_pr(12, &top, &bottom, "change 2 title", "change 2 body")?;
+    let advanced = repo.advance_remote_trunk("remote work", &stack[1].change_id)?;
+    repo.set_bookmark("forklift/frozen/pr-12", &stack[1].commit_id)?;
+    repo.clear_gh_requests()?;
+
+    let output = repo.run_tty_with_stdin(&["merge", "11", "--admin"], "y\n")?;
+    assert_success("merge 11 --admin with unfreeze prompt", &output);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("sync") || stdout_of(&output).contains("sync"),
+        "merge should report the recovery flow\nstdout:\n{}\nstderr:\n{}",
+        stdout_of(&output),
+        stderr
+    );
+
+    let merged_head = repo.git_remote_branch_target("main")?;
+    assert_eq!(
+        repo.git_remote_branch_target(&bottom)?,
+        merged_head,
+        "sync+submit should push the rebased target PR before merge"
+    );
+    assert_ne!(
+        merged_head, stack[0].commit_id,
+        "merge should not use the stale pre-sync PR head"
+    );
+    assert_ne!(
+        merged_head, advanced.commit_id,
+        "merge should fast-forward trunk past the fetched remote tip"
+    );
+    assert_eq!(repo.stored_pr(11)?["state"], json!("MERGED"));
     Ok(())
 }
 

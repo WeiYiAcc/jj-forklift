@@ -10,9 +10,10 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -23,6 +24,10 @@ pub const CONFIG_PREFIX: &str = "stack";
 
 pub fn branch_for(slug: &str, change_id: &str) -> String {
     format!("stack/{slug}-{}", &change_id[..8])
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 pub struct TestRepo {
@@ -108,6 +113,29 @@ impl TestRepo {
             .env("PATH", self.path_with_fake_gh())
             .env("FORKLIFT_GH_DIR", &self.root)
             .output()?)
+    }
+
+    pub fn run_tty_with_stdin(&self, args: &[&str], stdin: &str) -> anyhow::Result<Output> {
+        let command = std::iter::once(env!("CARGO_BIN_EXE_forklift"))
+            .chain(args.iter().copied())
+            .map(shell_quote)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut child = Command::new("script")
+            .args(["-qec", &command, "/dev/null"])
+            .current_dir(&self.work)
+            .env("PATH", self.path_with_fake_gh())
+            .env("FORKLIFT_GH_DIR", &self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .as_mut()
+            .context("open forklift stdin")?
+            .write_all(stdin.as_bytes())?;
+        Ok(child.wait_with_output()?)
     }
 
     // ----- real-repo construction helpers -----

@@ -330,6 +330,7 @@ pub(crate) fn unfreeze_before_retrying_merge(
 ) -> Result<()> {
     let unfreeze_commands = merge_unfreeze_commands(&unfreeze_required.unfreeze_targets);
     let merge_command = format!("forklift merge {}", unfreeze_required.target);
+    let sync_command = format!("forklift sync {} --submit --yes", unfreeze_required.target);
     if !io::stdin().is_terminal() {
         let diagnostic = unfreeze_required.cli_error();
         return Err(CliError::new(diagnostic.message)
@@ -339,7 +340,7 @@ pub(crate) fn unfreeze_before_retrying_merge(
                     .unwrap_or_else(|| "merge target is frozen".to_owned()),
             )
             .resolution(format!(
-                "run {unfreeze_commands}, then rerun `{merge_command}`"
+                "run {unfreeze_commands}, then `{sync_command}`, then rerun `{merge_command}`"
             ))
             .into());
     }
@@ -350,7 +351,9 @@ pub(crate) fn unfreeze_before_retrying_merge(
         "merge requires unfreeze before retry"
     );
     eprintln!("Merge target is frozen.");
-    eprint!("Run {unfreeze_commands} now, then retry merge? [y/N] ");
+    eprint!(
+        "Run {unfreeze_commands}, then sync+submit the adopted stack, then retry merge? [y/N] "
+    );
     io::stderr()
         .flush()
         .context("flush merge unfreeze prompt")?;
@@ -362,7 +365,7 @@ pub(crate) fn unfreeze_before_retrying_merge(
         return Err(CliError::new("merge cancelled")
             .reason("unfreeze was not run")
             .resolution(format!(
-                "run {unfreeze_commands}, then rerun `{merge_command}`"
+                "run {unfreeze_commands}, then `{sync_command}`, then rerun `{merge_command}`"
             ))
             .into());
     }

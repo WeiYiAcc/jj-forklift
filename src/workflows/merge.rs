@@ -152,8 +152,8 @@ pub(crate) fn diagnose_empty_targeted_merge(
                 unfreeze_targets,
                 format!("{} is covered by {bookmark_names}", target.commit_id),
                 format!(
-                    "run {unfreeze_commands}, then rerun `forklift merge {}`",
-                    target.input
+                    "run {unfreeze_commands}, then `forklift sync {} --submit --yes`, then rerun `forklift merge {}`",
+                    target.input, target.input
                 ),
             )
             .into());

@@ -28,7 +28,7 @@ pub(crate) fn run(
         )?;
     }
     let target_label = options.target.as_deref().unwrap_or(DEFAULT_STACK_REVSET);
-    let merge_revset = effective_merge_revset(runner, options.target.as_deref())
+    let mut merge_revset = effective_merge_revset(runner, options.target.as_deref())
         .map_err(|error| phase_error("resolve-merge-target", target_label, error))?;
     let sync_command = merge_sync_command(options.target.as_deref());
     let summary = match merge_stack(
@@ -60,9 +60,24 @@ pub(crate) fn run(
                 )?;
             } else if let Some(unfreeze_required) = find_merge_unfreeze_required(&error) {
                 unfreeze_before_retrying_merge(runner, &config, &unfreeze_required, diagnostics)?;
+                let sync_revset = effective_sync_revset(runner, Some(&unfreeze_required.target))
+                    .map_err(|error| {
+                        phase_error("resolve-sync-target", &unfreeze_required.target, error)
+                    })?;
+                sync_stack(
+                    runner,
+                    &config,
+                    &sync_revset.revset,
+                    sync_revset.target.as_ref(),
+                    true,
+                    true,
+                    diagnostics,
+                )?;
             } else {
                 return Err(error);
             }
+            merge_revset = effective_merge_revset(runner, options.target.as_deref())
+                .map_err(|error| phase_error("resolve-merge-target", target_label, error))?;
             merge_stack(
                 runner,
                 &merge_config,
