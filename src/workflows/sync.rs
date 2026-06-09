@@ -254,10 +254,24 @@ pub(crate) fn validate_sync_frozen_pr_stack(
     for (index, (dependency, pr)) in dependencies.iter().zip(prs).enumerate() {
         validate_sync_frozen_pr_metadata(config, github, dependency, pr)?;
         if index == 0 {
-            if pr.base_ref_name != config.trunk {
+            if pr.base_ref_name != config.trunk
+                && !frozen_dependency_base_matches_local_parent(dependency, pr)
+            {
+                let local_parents = dependency
+                    .change
+                    .parent_ids
+                    .iter()
+                    .map(|parent| short_commit_id(parent))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 bail!(CliError::new(format!(
-                    "unexpected retarget for frozen dependency `{}` PR #{}: base branch is `{}`, expected trunk `{}`",
-                    dependency.bookmark.name, pr.number, pr.base_ref_name, config.trunk
+                    "unexpected retarget for frozen dependency `{}` PR #{}: base branch is `{}` at {}, expected trunk `{}` or local parent {}",
+                    dependency.bookmark.name,
+                    pr.number,
+                    pr.base_ref_name,
+                    short_commit_id(&pr.base_ref_oid),
+                    config.trunk,
+                    local_parents
                 )));
             }
             continue;
@@ -287,6 +301,17 @@ pub(crate) fn validate_sync_frozen_pr_stack(
     }
 
     Ok(true)
+}
+
+pub(crate) fn frozen_dependency_base_matches_local_parent(
+    dependency: &FrozenDependency,
+    pr: &GhPr,
+) -> bool {
+    dependency
+        .change
+        .parent_ids
+        .iter()
+        .any(|parent| parent == &pr.base_ref_oid)
 }
 
 #[tracing::instrument(skip_all, fields(pr = pr.number))]

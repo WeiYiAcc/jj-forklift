@@ -201,6 +201,31 @@ fn sync_from_empty_child_above_frozen_pr_succeeds() -> anyhow::Result<()> {
 }
 
 #[test]
+fn sync_frozen_suffix_based_on_unfrozen_parent_succeeds() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-frozen-suffix")?;
+    repo.init_main()?;
+    let stack = repo.create_linear_stack(2)?;
+    let bottom = branch_for("change-1-title", &stack[0].change_id);
+    let top = branch_for("change-2-title", &stack[1].change_id);
+    repo.set_bookmark(&bottom, &stack[0].commit_id)?;
+    repo.set_bookmark(&top, &stack[1].commit_id)?;
+    repo.push_bookmark(&bottom)?;
+    repo.push_bookmark(&top)?;
+    repo.seed_pr(11, &bottom, "main", "change 1 title", "change 1 body")?;
+    repo.seed_pr(12, &top, &bottom, "change 2 title", "change 2 body")?;
+    repo.set_bookmark("forklift/frozen/pr-12", &stack[1].commit_id)?;
+    repo.jj(&["new", &stack[1].commit_id])?;
+
+    let output = repo.run(&["sync"])?;
+    assert_success("sync", &output);
+    assert_eq!(
+        repo.bookmark_target("forklift/frozen/pr-12")?,
+        stack[1].commit_id
+    );
+    Ok(())
+}
+
+#[test]
 fn sync_divergence_stops_before_rebase() -> anyhow::Result<()> {
     let repo = TestRepo::new("sync-divergence")?;
     repo.init_main()?;
