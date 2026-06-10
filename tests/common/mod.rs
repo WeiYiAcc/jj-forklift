@@ -876,6 +876,14 @@ def pr_view(state, pr):
         "autoMergeRequest": None,
     }
 
+def pr_list_view(state, pr):
+    view = pr_view(state, pr)
+    # Match `gh pr list --json headRepository`: the list endpoint does not
+    # include repository node_id or owner-qualified names.
+    view["headRepository"] = {"id": "repo-node", "name": "repo"}
+    view.pop("baseRepository", None)
+    return view
+
 def find_pr(state, number):
     for pr in state["prs"]:
         if int(pr["number"]) == int(number):
@@ -909,7 +917,7 @@ if args[:2] == ["pr", "list"]:
     head = args[args.index("--head") + 1] if "--head" in args else None
     out = []
     for pr in state["prs"]:
-        view = pr_view(state, pr)
+        view = pr_list_view(state, pr)
         if wanted and view["state"].upper() != wanted:
             continue
         if head and view["headRefName"] != head:

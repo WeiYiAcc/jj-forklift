@@ -368,7 +368,7 @@ pub(crate) fn lookup_get_target_pr(
         .cloned()
         .collect::<Vec<_>>();
     if !branch_matches.is_empty() {
-        return one_get_target_match(target, "branch", branch_matches, purpose);
+        return one_get_target_match(runner, github, target, "branch", branch_matches, purpose);
     }
 
     // Prefer jj's own prefix resolution: it expands a short, locally
@@ -379,14 +379,16 @@ pub(crate) fn lookup_get_target_pr(
         Some(change_id) => change_id_branch_prefix(&change_id).to_owned(),
         None => {
             let Some(prefix) = change_prefix_get_target(target) else {
-                bail!(CliError::new(format!(
-                    "{purpose} target `{target}` did not match an open PR branch"
-                ))
-                .resolution(
-                    "pass a PR number, PR URL, exact branch name, or a jj change id prefix \
+                bail!(
+                    CliError::new(format!(
+                        "{purpose} target `{target}` did not match an open PR branch"
+                    ))
+                    .resolution(
+                        "pass a PR number, PR URL, exact branch name, or a jj change id prefix \
                      (short prefixes work for locally checked-out changes; otherwise use at \
                      least 8 chars)"
-                ));
+                    )
+                );
             };
             prefix
         }
@@ -395,7 +397,14 @@ pub(crate) fn lookup_get_target_pr(
         .into_iter()
         .filter(|pr| head_branch_matches_change_prefix(&pr.head_ref_name, &prefix))
         .collect::<Vec<_>>();
-    one_get_target_match(target, "change id prefix", change_matches, purpose)
+    one_get_target_match(
+        runner,
+        github,
+        target,
+        "change id prefix",
+        change_matches,
+        purpose,
+    )
 }
 
 #[tracing::instrument(skip_all, fields(purpose = %purpose))]
@@ -432,6 +441,8 @@ pub(crate) fn list_open_prs(
 
 #[tracing::instrument(level = "trace", skip_all, fields(target = %target, kind = %kind))]
 pub(crate) fn one_get_target_match(
+    runner: &impl CommandRunner,
+    github: &GitHubContext,
     target: &str,
     kind: &str,
     matches: Vec<GhPr>,
@@ -439,7 +450,7 @@ pub(crate) fn one_get_target_match(
 ) -> Result<GhPr> {
     match matches.as_slice() {
         [] => bail!("{purpose} target `{target}` did not match an open PR {kind}"),
-        [pr] => Ok(pr.clone()),
+        [pr] => fetch_pr_by_number(runner, github, purpose, pr.number),
         _ => {
             let refs = matches
                 .iter()
@@ -718,8 +729,9 @@ pub(crate) fn lookup_open_pr_by_head_branch(
                     pr.number
                 )));
             }
+            let pr = fetch_pr_by_number(runner, github, change_id, pr.number)?;
             let comment_id = find_stack_comment_id(runner, github, pr.number, change_id);
-            Ok(Some(pr.clone().into_cache_entry(comment_id)))
+            Ok(Some(pr.into_cache_entry(comment_id)))
         }
         _ => bail!(CliError::new(format!(
             "conflicting PR lookup for {}/{}: branch `{}` matched {} open PRs",

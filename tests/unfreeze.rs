@@ -5,6 +5,32 @@ mod common;
 use common::*;
 
 #[test]
+fn unfreeze_resolves_change_id_target_with_full_pr_metadata() -> anyhow::Result<()> {
+    let repo = TestRepo::new("unfreeze-change-id-target")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.set_bookmark(&branch, &change.commit_id)?;
+    repo.push_bookmark(&branch)?;
+    repo.seed_pr(11, &branch, "main", "change title", "change body")?;
+    repo.set_bookmark("forklift/frozen/pr-11", &change.commit_id)?;
+
+    let target: String = change.change_id.chars().take(8).collect();
+    let output = repo.run(&["unfreeze", &target])?;
+    assert_success(&format!("unfreeze {target}"), &output);
+
+    assert!(
+        !repo.bookmark_exists("forklift/frozen/pr-11")?,
+        "frozen bookmark should be removed"
+    );
+    assert!(
+        repo.is_mutable(&change.commit_id)?,
+        "change-id target should be adopted using fully fetched PR metadata"
+    );
+    Ok(())
+}
+
+#[test]
 fn unfreeze_tracks_descendant_untracked_remote_blockers() -> anyhow::Result<()> {
     let repo = TestRepo::new("unfreeze-remote-blocker")?;
     repo.init_main()?;
