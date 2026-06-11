@@ -284,6 +284,96 @@ fn sync_divergence_stops_before_rebase() -> anyhow::Result<()> {
 }
 
 #[test]
+fn sync_prunes_duplicate_change_already_landed_on_remote_trunk() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-landed-duplicate-change-id")?;
+    let main = repo.init_main()?;
+    let landed = repo.create_change(
+        "cold-storage",
+        "refactor(depot): remove sqlite cold storage",
+        "remove cold storage",
+    )?;
+    let child = repo.create_change("followup", "fix(depot): followup", "keep me")?;
+    let local_stack_op = repo.current_operation_id()?;
+
+    repo.set_bookmark("main", &landed.commit_id)?;
+    repo.push_bookmark("main")?;
+    repo.jj(&["op", "restore", &local_stack_op])?;
+    repo.jj(&["edit", &landed.change_id])?;
+    repo.write_file("cold-storage.txt", "local duplicate rewrite\n")?;
+    repo.jj(&[
+        "describe",
+        "-m",
+        "refactor(depot): remove sqlite cold storage",
+        "-m",
+        "remove cold storage",
+    ])?;
+    let duplicate = repo.change_at(&landed.change_id)?;
+    assert_ne!(
+        duplicate.commit_id, landed.commit_id,
+        "test setup should create a local divergent copy"
+    );
+    repo.jj(&["edit", &child.change_id])?;
+
+    let output = repo.run(&["sync"])?;
+    assert_success("sync", &output);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already exists on `main@origin`; pruning local duplicate"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("1 duplicate(s) pruned"),
+        "stderr:\n{stderr}"
+    );
+
+    let child_after = repo.change_at(&child.change_id)?;
+    let child_parent = repo.rev_commit_id(&format!("{}-", child_after.commit_id))?;
+    assert_eq!(
+        child_parent, landed.commit_id,
+        "sync should rebase the surviving child onto the landed remote trunk copy"
+    );
+    assert_eq!(
+        repo.bookmark_target("main")?,
+        landed.commit_id,
+        "sync should move local trunk to the landed remote copy"
+    );
+    assert_eq!(
+        repo.rev_commit_id(&format!("change_id({})", landed.change_id))?,
+        landed.commit_id,
+        "local duplicate should be abandoned; only the landed copy remains"
+    );
+    assert_ne!(
+        repo.bookmark_target("main")?,
+        main.commit_id,
+        "test setup should advance trunk"
+    );
+    Ok(())
+}
+
+#[test]
+fn sync_ignores_deleted_local_stack_bookmark_markers() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-deleted-local-bookmark-marker")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.set_bookmark(&branch, &change.commit_id)?;
+    repo.push_bookmark(&branch)?;
+    repo.jj(&["bookmark", "delete", &branch])?;
+    assert!(
+        repo.remote_branch_exists(&branch)?,
+        "test setup should leave the remote bookmark intact"
+    );
+
+    let output = repo.run(&["sync"])?;
+    assert_success("sync", &output);
+    assert!(
+        repo.remote_branch_exists(&branch)?,
+        "sync cleanup should ignore the local deleted marker rather than push a deletion"
+    );
+    Ok(())
+}
+
+#[test]
 fn sync_from_secondary_workspace_succeeds() -> anyhow::Result<()> {
     let repo = TestRepo::new("ws-sync")?;
     repo.init_main()?;

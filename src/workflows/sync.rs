@@ -25,8 +25,24 @@ pub(crate) fn sync_stack(
         .map_err(|error| phase_error("resolve-stack", "trunk()", error))?;
     let frozen_bookmarks = frozen_bookmarks(runner)
         .map_err(|error| phase_error("resolve-stack", "frozen-bookmarks", error))?;
-    let stack = resolve_stack(runner, revset)
+    let mut stack = resolve_stack(runner, revset)
         .map_err(|error| phase_error("resolve-stack", revset, error))?;
+    let pruned_duplicate_commits =
+        prune_landed_duplicate_changes(runner, config, &stack, diagnostics)
+            .map_err(|error| phase_error("resolve-stack", revset, error))?;
+    let pruned_duplicates = pruned_duplicate_commits.len();
+    if pruned_duplicates > 0 {
+        if diagnostics.dry_run {
+            let pruned = pruned_duplicate_commits
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            stack.retain(|change| !pruned.contains(change.commit_id.as_str()));
+        } else {
+            stack = resolve_stack(runner, revset)
+                .map_err(|error| phase_error("resolve-stack", revset, error))?;
+        }
+    }
     // Nothing left to sync (e.g. the whole stack just merged). Move trunk to the
     // fetched remote tip and finish, reporting any branches we cleaned up rather
     // than failing on the empty stack.
@@ -38,6 +54,7 @@ pub(crate) fn sync_stack(
             rebased_roots: 0,
             submit_ran: false,
             cleaned_branches,
+            pruned_duplicates,
             conflicts: 0,
         });
     }
@@ -76,6 +93,7 @@ pub(crate) fn sync_stack(
             rebased_roots: 0,
             submit_ran: false,
             cleaned_branches,
+            pruned_duplicates,
             conflicts: 0,
         });
     }
@@ -118,6 +136,7 @@ pub(crate) fn sync_stack(
             rebased_roots,
             submit_ran: false,
             cleaned_branches,
+            pruned_duplicates,
             conflicts,
         });
     }
@@ -128,6 +147,7 @@ pub(crate) fn sync_stack(
             rebased_roots,
             submit_ran: true,
             cleaned_branches,
+            pruned_duplicates,
             conflicts,
         });
     }
@@ -156,8 +176,100 @@ pub(crate) fn sync_stack(
         rebased_roots,
         submit_ran: true,
         cleaned_branches,
+        pruned_duplicates,
         conflicts,
     })
+}
+
+pub(crate) fn prune_landed_duplicate_changes(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    stack: &[ResolvedChange],
+    diagnostics: Diagnostics,
+) -> Result<Vec<String>> {
+    let mut landed_duplicates = Vec::new();
+    for change in stack {
+        let landed_commits = landed_change_commits(runner, config, &change.change_id)?;
+        if landed_commits
+            .iter()
+            .any(|commit_id| commit_id != &change.commit_id)
+        {
+            landed_duplicates.push(change);
+        }
+    }
+    if landed_duplicates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    for change in &landed_duplicates {
+        ui_warn_line(&format!(
+            "change {} ({}) already exists on `{}@{}`; pruning local duplicate",
+            short_change_id(&change.change_id),
+            short_commit_id(&change.commit_id),
+            config.trunk,
+            config.remote
+        ));
+    }
+
+    let mut args = vec!["abandon"];
+    for change in &landed_duplicates {
+        args.push(change.commit_id.as_str());
+    }
+
+    if diagnostics.dry_run {
+        diagnostics.plan_line(&format!("- {}", display_command("jj", &args)));
+        return Ok(landed_duplicates
+            .iter()
+            .map(|change| change.commit_id.clone())
+            .collect());
+    }
+
+    diagnostics.command("jj", &args);
+    let output = runner.run("jj", &args)?;
+    if !output.success {
+        bail!(
+            "failed-command=`{}` error={}",
+            display_command("jj", &args),
+            output.stderr.trim()
+        );
+    }
+
+    Ok(landed_duplicates
+        .iter()
+        .map(|change| change.commit_id.clone())
+        .collect())
+}
+
+fn landed_change_commits(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    change_id: &str,
+) -> Result<Vec<String>> {
+    let revset = format!("::{} & change_id({change_id})", remote_jj_ref(config));
+    let args = [
+        "log",
+        "--no-graph",
+        "-r",
+        revset.as_str(),
+        "-T",
+        "commit_id ++ \"\\n\"",
+    ];
+    let output = runner.run("jj", &args)?;
+    if !output.success {
+        bail!(
+            "failed-command=`{}` error={}",
+            display_command("jj", &args),
+            output.stderr.trim()
+        );
+    }
+
+    Ok(output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 pub(crate) fn prompt_submit_after_sync(

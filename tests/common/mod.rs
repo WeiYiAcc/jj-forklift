@@ -187,6 +187,15 @@ impl TestRepo {
         run_ok_in(&self.work, "jj", args)
     }
 
+    pub fn jj_stdout(&self, args: &[&str]) -> anyhow::Result<String> {
+        run_stdout_in(&self.work, "jj", args)
+    }
+
+    pub fn current_operation_id(&self) -> anyhow::Result<String> {
+        self.jj_stdout(&["op", "log", "--no-graph", "-n", "1", "-T", "id ++ \"\\n\""])
+            .map(|value| value.trim().to_owned())
+    }
+
     pub fn write_file(&self, name: &str, contents: &str) -> anyhow::Result<()> {
         fs::write(self.work.join(name), contents).map_err(Into::into)
     }

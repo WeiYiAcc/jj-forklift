@@ -25,25 +25,27 @@ pub(crate) fn run(
         ui_progress(
             "Finished",
             &format!(
-                "sync (dry run) — {} roots, submit {}, {} merged branch(es) to clean",
+                "sync (dry run) — {} roots, submit {}, {} merged branch(es) to clean, {} duplicate(s) to prune",
                 summary.rebased_roots,
                 if summary.submit_ran {
                     "planned"
                 } else {
                     "skipped"
                 },
-                summary.cleaned_branches
+                summary.cleaned_branches,
+                summary.pruned_duplicates
             ),
         );
     } else {
         ui_progress(
             "Finished",
             &format!(
-                "sync — {} roots rebased, {} conflict(s), submit {}, {} merged branch(es) cleaned",
+                "sync — {} roots rebased, {} conflict(s), submit {}, {} merged branch(es) cleaned, {} duplicate(s) pruned",
                 summary.rebased_roots,
                 summary.conflicts,
                 if summary.submit_ran { "ran" } else { "skipped" },
-                summary.cleaned_branches
+                summary.cleaned_branches,
+                summary.pruned_duplicates
             ),
         );
     }

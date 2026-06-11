@@ -47,6 +47,7 @@ pub(crate) struct SyncSummary {
     pub(crate) rebased_roots: usize,
     pub(crate) submit_ran: bool,
     pub(crate) cleaned_branches: usize,
+    pub(crate) pruned_duplicates: usize,
     pub(crate) conflicts: usize,
 }
 

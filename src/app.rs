@@ -52,7 +52,7 @@ const JJ_WRAPPED_IMMUTABLE_ALIAS_VALUE: &str =
     "forklift_base_immutable_heads() | forklift_frozen_heads()";
 const BOOKMARK_STATUS_TEMPLATE: &str = "remote ++ \"\\t\" ++ if(tracked, \"tracked\", \"untracked\") ++ \"\\t\" ++ if(conflict, \"conflicted\", \"ok\") ++ \"\\n\"";
 const REMOTE_BOOKMARK_TEMPLATE: &str = "name ++ \"\\t\" ++ remote ++ \"\\t\" ++ if(tracked, \"tracked\", \"untracked\") ++ \"\\t\" ++ if(conflict, \"conflicted\", \"ok\") ++ \"\\t\" ++ if(conflict, \"\", normal_target.commit_id()) ++ \"\\n\"";
-const LOCAL_BOOKMARK_TEMPLATE: &str = "name ++ \"\\t\" ++ remote ++ \"\\n\"";
+const LOCAL_BOOKMARK_TEMPLATE: &str = "name ++ \"\\t\" ++ remote ++ \"\\t\" ++ if(conflict, \"conflicted\", \"ok\") ++ \"\\t\" ++ if(conflict, \"\", normal_target.commit_id()) ++ \"\\n\"";
 const FROZEN_BOOKMARK_TEMPLATE: &str = "name ++ \"\\t\" ++ if(conflict, \"conflicted\", \"ok\") ++ \"\\t\" ++ if(conflict, \"\", normal_target.commit_id()) ++ \"\\n\"";
 const FROZEN_BOOKMARK_PREFIX: &str = "forklift/frozen/pr-";
 

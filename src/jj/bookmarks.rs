@@ -694,7 +694,13 @@ pub(crate) fn local_stack_bookmarks(
             let mut fields = line.split('\t');
             let name = fields.next()?.trim();
             let remote = fields.next().unwrap_or_default().trim();
-            if !remote.is_empty() || !name.starts_with(&prefix) {
+            let status = fields.next().unwrap_or_default().trim();
+            let target = fields.next().unwrap_or_default().trim();
+            if !remote.is_empty()
+                || !name.starts_with(&prefix)
+                || status == "conflicted"
+                || !is_resolvable_bookmark_target(target)
+            {
                 return None;
             }
             Some(name.to_owned())
@@ -703,4 +709,8 @@ pub(crate) fn local_stack_bookmarks(
     bookmarks.sort();
     bookmarks.dedup();
     Ok(bookmarks)
+}
+
+pub(crate) fn is_resolvable_bookmark_target(target: &str) -> bool {
+    !target.is_empty() && !target.starts_with("<Error:")
 }
