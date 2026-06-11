@@ -390,17 +390,42 @@ pub(crate) fn fetch_remote(
     diagnostics: Diagnostics,
 ) -> Result<()> {
     let args = ["git", "fetch", "--remote", config.remote.as_str()];
+    run_fetch_remote_command(runner, config, diagnostics, &args)
+}
+
+pub(crate) fn fetch_remote_preserving_local_commits(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    diagnostics: Diagnostics,
+) -> Result<()> {
+    let args = [
+        "git",
+        "fetch",
+        "--config",
+        "git.abandon-unreachable-commits=false",
+        "--remote",
+        config.remote.as_str(),
+    ];
+    run_fetch_remote_command(runner, config, diagnostics, &args)
+}
+
+fn run_fetch_remote_command(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    diagnostics: Diagnostics,
+    args: &[&str],
+) -> Result<()> {
     if diagnostics.dry_run {
-        diagnostics.plan_line(&format!("- {}", display_command("jj", &args)));
+        diagnostics.plan_line(&format!("- {}", display_command("jj", args)));
         return Ok(());
     }
 
-    diagnostics.command("jj", &args);
-    let output = runner.run("jj", &args)?;
+    diagnostics.command("jj", args);
+    let output = runner.run("jj", args)?;
     if !output.success {
         bail!(
             "failed-command=`{}` error={}",
-            display_command("jj", &args),
+            display_command("jj", args),
             output.stderr.trim()
         );
     }
@@ -413,7 +438,7 @@ pub(crate) fn fetch_remote(
     jj_trunk_remote_commit(runner, config).map_err(|error| {
         anyhow!(
             "`{}` reported success but `{remote_jj_ref}` is not resolvable; check {CONFIG_PREFIX}.remote and {CONFIG_PREFIX}.trunk: {error}",
-            display_command("jj", &args)
+            display_command("jj", args)
         )
     })?;
 

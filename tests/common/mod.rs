@@ -203,6 +203,19 @@ impl TestRepo {
         )
     }
 
+    pub fn delete_remote_branch_directly(&self, name: &str) -> anyhow::Result<()> {
+        run_ok(
+            "git",
+            &[
+                "--git-dir",
+                self.remote.to_str().context("remote path is valid utf-8")?,
+                "update-ref",
+                "-d",
+                &format!("refs/heads/{name}"),
+            ],
+        )
+    }
+
     pub fn fetch_origin(&self) -> anyhow::Result<()> {
         run_ok_in(&self.work, "jj", &["git", "fetch", "--remote", "origin"])
     }

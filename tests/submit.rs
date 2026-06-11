@@ -39,6 +39,30 @@ fn one_change_submit_creates_pr() -> anyhow::Result<()> {
 }
 
 #[test]
+fn submit_refreshes_stale_remote_bookmarks_before_pushing() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-stale-remote")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+
+    repo.set_bookmark(&branch, &change.commit_id)?;
+    repo.push_bookmark(&branch)?;
+    repo.delete_remote_branch_directly(&branch)?;
+    assert!(
+        !repo.remote_branch_exists(&branch)?,
+        "test setup should delete only the real remote branch"
+    );
+
+    let output = repo.run(&["submit", "--yes"])?;
+    assert_success("submit", &output);
+
+    assert_eq!(repo.git_remote_branch_target(&branch)?, change.commit_id);
+    assert!(repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}
+
+#[test]
 fn submit_rejects_undescribed_empty_spacer_below_stack() -> anyhow::Result<()> {
     let repo = TestRepo::new("submit-undescribed-spacer")?;
     repo.init_main()?;

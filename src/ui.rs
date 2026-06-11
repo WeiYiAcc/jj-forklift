@@ -151,6 +151,7 @@ pub(super) fn phase_label(phase: &str) -> (&'static str, &str) {
         "status-aliases" => ("Checking", "jj aliases"),
         "fetch-branch" => ("Fetching", "branch"),
         "fetch-stack" => ("Fetching", "stack"),
+        "submit-fetch" => ("Fetching", "remote"),
         "sync-fetch" => ("Fetching", "trunk"),
         "push-refs" => ("Pushing", "bookmarks"),
         "track-branch" => ("Tracking", "branch"),

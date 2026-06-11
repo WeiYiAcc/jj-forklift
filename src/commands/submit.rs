@@ -9,6 +9,10 @@ pub(crate) fn run(
     verbose: bool,
     dry_run: bool,
 ) -> Result<()> {
+    diagnostics.phase("submit-fetch");
+    fetch_remote_preserving_local_commits(runner, config, diagnostics)
+        .map_err(|error| phase_error("submit-fetch", &config.remote, error))?;
+
     let context = resolve_stack_context(runner, DEFAULT_STACK_REVSET)
         .map_err(|error| phase_error("resolve-stack", DEFAULT_STACK_REVSET, error))?;
     if verbose {

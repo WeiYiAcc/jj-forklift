@@ -1238,12 +1238,34 @@ pub(crate) fn push_changed_heads(
     for (index, plan) in changed.iter().enumerate() {
         set_submit_bookmark(runner, plan, diagnostics)?;
         push_submit_bookmark(runner, config, plan, diagnostics)?;
+        verify_submit_bookmark_pushed(runner, config, plan)?;
         if let Some(progress) = &progress {
             progress.set_position((index + 1) as u64);
         }
     }
     if let Some(progress) = progress {
         ui_finish_progress_bar(progress);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn verify_submit_bookmark_pushed(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    plan: &SubmitPlan,
+) -> Result<()> {
+    let remote_head = remote_head_oid(runner, &config.remote, &plan.head_branch)?;
+    if remote_head.as_deref() != Some(plan.change.commit_id.as_str()) {
+        bail!(
+            "phase=push-refs object=bookmark:{} error=push completed but remote branch is {}; expected {}. safe-next-command=`forklift submit --dry-run`",
+            plan.head_branch,
+            remote_head
+                .as_deref()
+                .map(short_commit_id)
+                .unwrap_or("<absent>"),
+            short_commit_id(&plan.change.commit_id)
+        );
     }
 
     Ok(())
