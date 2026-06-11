@@ -562,3 +562,102 @@ fn submit_tolerates_collapsed_bookmarks_and_closes_orphan() -> anyhow::Result<()
     );
     Ok(())
 }
+
+#[test]
+fn submit_rebases_stack_when_trunk_moved() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-trunk-moved")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+
+    // Upstream trunk moves and the local bookmark follows it (as the pre-submit
+    // fetch does), stranding the stack root behind the new trunk. Submit used to
+    // fail base validation here and demand a manual `forklift sync`.
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+    repo.set_bookmark("main", &advanced.commit_id)?;
+
+    let output = repo.run(&["submit", "--yes"])?;
+    assert_success("submit", &output);
+
+    // The stack was rebased onto the new trunk before pushing.
+    let rebased = repo.change_at(&change.change_id)?;
+    assert_ne!(
+        rebased.commit_id, change.commit_id,
+        "submit should rebase the stranded stack"
+    );
+    let parent = repo.rev_commit_id(&format!("{}-", rebased.commit_id))?;
+    assert_eq!(parent, advanced.commit_id, "stack should sit on the new trunk");
+    assert_eq!(repo.git_remote_branch_target(&branch)?, rebased.commit_id);
+    let pr = repo.stored_pr(9)?;
+    assert_eq!(pr["headRefName"], json!(branch));
+    assert_eq!(pr["baseRefName"], json!("main"));
+    Ok(())
+}
+
+#[test]
+fn submit_stops_before_pushing_when_trunk_rebase_conflicts() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-trunk-rebase-conflict")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+
+    // Advance trunk with a commit that rewrites the same file the stack change
+    // touches, so the automatic rebase conflicts. Leave the local bookmark on
+    // the new tip, matching the post-fetch state.
+    repo.jj(&["new", "main"])?;
+    repo.write_file("change.txt", "conflicting remote contents\n")?;
+    repo.jj(&["describe", "-m", "remote work"])?;
+    repo.jj(&["bookmark", "set", "main", "-r", "@"])?;
+    repo.push_bookmark("main")?;
+    repo.jj(&["edit", &change.commit_id])?;
+
+    let output = repo.run(&["submit", "--yes"])?;
+    assert!(
+        !output.status.success(),
+        "submit must not push a conflicted rebase\nstdout:\n{}\nstderr:\n{}",
+        stdout_of(&output),
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("conflict"),
+        "submit should report the rebase conflict\nstderr:\n{stderr}"
+    );
+
+    // Nothing was pushed and no PR was created.
+    assert!(
+        !repo.remote_branch_exists(&branch)?,
+        "conflicted submit must not push the PR branch"
+    );
+    assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}
+
+#[test]
+fn submit_dry_run_plans_rebase_when_trunk_moved() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-trunk-moved-dry-run")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+    repo.set_bookmark("main", &advanced.commit_id)?;
+
+    let output = repo.run(&["submit", "--dry-run"])?;
+    assert_success("submit --dry-run", &output);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("rebase stack root"),
+        "dry run should plan the trunk rebase\nstdout:\n{stdout}"
+    );
+
+    // The dry run changed nothing: the stack still sits on the old trunk and
+    // nothing was pushed or created.
+    let unchanged = repo.change_at(&change.change_id)?;
+    assert_eq!(unchanged.commit_id, change.commit_id);
+    assert!(!repo.remote_branch_exists(&branch)?);
+    assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}

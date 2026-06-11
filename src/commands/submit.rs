@@ -13,8 +13,56 @@ pub(crate) fn run(
     fetch_remote_preserving_local_commits(runner, config, diagnostics)
         .map_err(|error| phase_error("submit-fetch", &config.remote, error))?;
 
-    let context = resolve_stack_context(runner, DEFAULT_STACK_REVSET)
+    let mut context = resolve_stack_context(runner, DEFAULT_STACK_REVSET)
         .map_err(|error| phase_error("resolve-stack", DEFAULT_STACK_REVSET, error))?;
+
+    // The pre-submit fetch fast-forwards the local trunk bookmark whenever
+    // upstream moved, stranding the stack root behind the new trunk — a state
+    // submit base validation rejects. Instead of failing and demanding a manual
+    // `forklift sync`, perform sync's trunk-move + rebase here and carry on.
+    if stack_behind_trunk(runner, config, &context)
+        .map_err(|error| phase_error("validate-submit-bases", "stack", error))?
+    {
+        diagnostics.phase("move-trunk");
+        move_trunk_to_remote(runner, config, diagnostics)
+            .map_err(|error| phase_error("move-trunk", &config.trunk, error))?;
+        diagnostics.phase("rebase-stack");
+        rebase_stack_roots(
+            runner,
+            &context.stack,
+            RebaseDestination::Trunk(config.trunk.clone()),
+            diagnostics,
+        )
+        .map_err(|error| phase_error("rebase-stack", DEFAULT_STACK_REVSET, error))?;
+        if dry_run {
+            // The rebase was only planned, so the live commits still fail base
+            // validation; stop at the plan rather than submitting stale ids.
+            diagnostics.plan_line("- run submit after the rebase");
+            ui_progress(
+                "Finished",
+                "submit (dry run) — stack is behind trunk; a real run rebases it, then submits",
+            );
+            return Ok(());
+        }
+        let conflicts = report_sync_conflicts(runner, DEFAULT_STACK_REVSET)
+            .map_err(|error| phase_error("rebase-stack", DEFAULT_STACK_REVSET, error))?;
+        if conflicts > 0 {
+            return Err(phase_error(
+                "rebase-stack",
+                "stack",
+                anyhow::Error::new(
+                    CliError::new(format!(
+                        "rebasing the stack onto trunk `{}` left {conflicts} conflicted change(s)",
+                        config.trunk
+                    ))
+                    .resolution("resolve the conflicts, then rerun `forklift submit`"),
+                ),
+            ));
+        }
+        context = resolve_stack_context(runner, DEFAULT_STACK_REVSET)
+            .map_err(|error| phase_error("resolve-stack", DEFAULT_STACK_REVSET, error))?;
+    }
+
     if verbose {
         print_github_context(&context.github);
         print_stack(&context.stack);

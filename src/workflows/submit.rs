@@ -1025,6 +1025,25 @@ pub(crate) fn refreshed_cache_entry(
     }
 }
 
+/// True when the stack's base is trunk and the local trunk bookmark has moved
+/// past the stack root's fork point — typically because the pre-submit fetch
+/// fast-forwarded it. Submit base validation rejects that state, so the stack
+/// must be rebased onto the new trunk before it can be submitted.
+pub(crate) fn stack_behind_trunk(
+    runner: &impl CommandRunner,
+    config: &AppConfig,
+    context: &AppContext,
+) -> Result<bool> {
+    if !context.frozen_dependencies.is_empty() {
+        return Ok(false);
+    }
+    let Some(root) = context.stack.first() else {
+        return Ok(false);
+    };
+    let trunk_tip = resolve_single_rev(runner, &config.trunk)?;
+    Ok(merge_base(runner, &root.commit_id, &trunk_tip)? != trunk_tip)
+}
+
 pub(crate) fn validate_submit_bases(
     runner: &impl CommandRunner,
     config: &AppConfig,
@@ -1060,6 +1079,9 @@ pub(crate) fn validate_submit_bases(
             base_label,
             short_commit_id(&base_tip),
             short_commit_id(&root_merge_base),
+        ))
+        .resolution(format!(
+            "run `forklift sync` to rebase the stack onto `{base_label}`"
         )));
     }
 
