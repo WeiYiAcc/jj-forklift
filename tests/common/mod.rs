@@ -10,7 +10,7 @@
 
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -136,6 +136,65 @@ impl TestRepo {
             .context("open forklift stdin")?
             .write_all(stdin.as_bytes())?;
         Ok(child.wait_with_output()?)
+    }
+
+    /// Run the binary on a pty, wait until `prompt` appears in its output,
+    /// run `mutate` (e.g. edit a file while the command sits at the prompt),
+    /// then send `input`. Reproduces races against the working copy that a
+    /// plain `run_tty_with_stdin` (which writes stdin immediately) cannot.
+    pub fn run_tty_prompt_then_input(
+        &self,
+        args: &[&str],
+        prompt: &str,
+        mutate: impl FnOnce() -> anyhow::Result<()>,
+        input: &str,
+    ) -> anyhow::Result<Output> {
+        let command = std::iter::once(env!("CARGO_BIN_EXE_forklift"))
+            .chain(args.iter().copied())
+            .map(shell_quote)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut child = Command::new("script")
+            .args(["-qec", &command, "/dev/null"])
+            .current_dir(&self.work)
+            .env("PATH", self.path_with_fake_gh())
+            .env("FORKLIFT_GH_DIR", &self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let mut stdout = child.stdout.take().context("take forklift stdout")?;
+        let mut collected = Vec::new();
+        let mut byte = [0u8; 1];
+        while !String::from_utf8_lossy(&collected).contains(prompt) {
+            let read = stdout.read(&mut byte)?;
+            anyhow::ensure!(
+                read > 0,
+                "forklift exited before printing `{prompt}`:\n{}",
+                String::from_utf8_lossy(&collected)
+            );
+            collected.extend_from_slice(&byte[..read]);
+        }
+
+        mutate()?;
+        child
+            .stdin
+            .as_mut()
+            .context("open forklift stdin")?
+            .write_all(input.as_bytes())?;
+
+        stdout.read_to_end(&mut collected)?;
+        let mut stderr = Vec::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            pipe.read_to_end(&mut stderr)?;
+        }
+        let status = child.wait()?;
+        Ok(Output {
+            status,
+            stdout: collected,
+            stderr,
+        })
     }
 
     // ----- real-repo construction helpers -----

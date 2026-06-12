@@ -457,6 +457,16 @@ pub(crate) fn submit_stack(
     print_submit_action_plan(config, &plans);
     confirm_submit_stack(yes, yes_command)?;
 
+    // Anything that touches a file between planning and here — a build tool
+    // rewriting Cargo.lock after a rebase, an editor save while the prompt
+    // waits — gets absorbed by the next jj command's working-copy snapshot,
+    // which rewrites the affected stack commits and hides the planned ids.
+    // `jj bookmark set` on a hidden id resurrects it next to its successor
+    // and leaves the change divergent, so re-pin every plan to its change's
+    // current visible commit first (this re-resolve performs the snapshot
+    // itself; the push phase below then skips snapshotting entirely).
+    reconcile_plans_with_current_commits(runner, &mut plans)?;
+
     tracing::debug!(phase = "push-refs", "recovery phase");
     push_changed_heads(runner, config, &plans, diagnostics)?;
 
@@ -1287,6 +1297,63 @@ pub(crate) fn remote_head_oid(
     }
 }
 
+/// Re-pin every plan to its change's current visible commit. Planning pinned
+/// commit ids, but a working-copy snapshot triggered by any jj command since
+/// then (absorbing concurrent file edits) may have rewritten stack commits;
+/// pushing the old, now-hidden ids would resurrect them and leave the changes
+/// divergent. A change that was benignly rewritten is re-pinned (and pushed)
+/// with a warning; a change that disappeared or became divergent aborts the
+/// submit before anything is pushed.
+pub(crate) fn reconcile_plans_with_current_commits(
+    runner: &impl CommandRunner,
+    plans: &mut [SubmitPlan],
+) -> Result<()> {
+    for plan in plans.iter_mut() {
+        let current = list_commit_ids(runner, &format!("change_id({})", plan.change.change_id))?;
+        // A plan whose commit is still visible is fine as-is — including the
+        // deliberately selected copy of an already-divergent change.
+        if current.iter().any(|commit| *commit == plan.change.commit_id) {
+            continue;
+        }
+        match current.as_slice() {
+            [current] => {
+                ui_warn!(
+                    "change {} was rewritten from {} to {} while submit was running (e.g. a working-copy snapshot absorbed file edits); submitting the current commit",
+                    short_change_id(&plan.change.change_id),
+                    short_commit_id(&plan.change.commit_id),
+                    short_commit_id(current)
+                );
+                plan.change.commit_id = current.clone();
+                plan.push_needed = true;
+                if plan.existing_pr.is_some() {
+                    plan.pr_update_needed = true;
+                }
+            }
+            [] => {
+                bail!(
+                    CliError::new(format!(
+                        "change {} disappeared while submit was running",
+                        short_change_id(&plan.change.change_id)
+                    ))
+                    .resolution("rerun `forklift submit` to replan against the current stack")
+                );
+            }
+            _ => {
+                bail!(
+                    CliError::new(format!(
+                        "change {} became divergent while submit was running",
+                        short_change_id(&plan.change.change_id)
+                    ))
+                    .resolution(
+                        "abandon the unwanted copy (`jj abandon <commit>`), then rerun `forklift submit`",
+                    )
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn push_changed_heads(
     runner: &impl CommandRunner,
     config: &AppConfig,
@@ -1343,9 +1410,13 @@ pub(crate) fn set_submit_bookmark(
     plan: &SubmitPlan,
     diagnostics: Diagnostics,
 ) -> Result<()> {
+    // --ignore-working-copy: the plan was re-pinned to current commit ids
+    // after the last snapshot; snapshotting again here could rewrite the
+    // commit mid-push and turn this set into a hidden-id resurrection.
     let args = [
         "bookmark",
         "set",
+        "--ignore-working-copy",
         "--allow-backwards",
         plan.head_branch.as_str(),
         "-r",
@@ -1374,6 +1445,7 @@ pub(crate) fn push_submit_bookmark(
     let args = [
         "git",
         "push",
+        "--ignore-working-copy",
         "--remote",
         config.remote.as_str(),
         "--bookmark",

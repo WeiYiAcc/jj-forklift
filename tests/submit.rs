@@ -751,3 +751,42 @@ fn submit_behind_trunk_requires_yes_when_not_a_terminal() -> anyhow::Result<()> 
     assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
     Ok(())
 }
+
+#[test]
+fn submit_repins_to_rewritten_commit_instead_of_resurrecting_hidden_id() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-mid-run-rewrite")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+
+    // While submit waits at the confirmation prompt, a concurrent tool edits a
+    // file in the working copy (@ sits on the stack change). The next jj
+    // command's snapshot rewrites the change, hiding the commit id the plan
+    // pinned — pushing that hidden id used to resurrect it and leave the
+    // change divergent.
+    let work_file = repo.work.join("change.txt");
+    let output = repo.run_tty_prompt_then_input(
+        &["submit"],
+        "Apply submit? [y/N]",
+        || Ok(std::fs::write(&work_file, "edited while submit waited\n")?),
+        "y\n",
+    )?;
+    assert_success("submit", &output);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("was rewritten from"),
+        "submit should report the re-pin\nstdout:\n{stdout}"
+    );
+
+    // The change resolves to a single (non-divergent) commit containing the
+    // edit, and that commit — not the stale planned id — is what was pushed.
+    let current = repo.change_at(&change.change_id)?;
+    assert_ne!(
+        current.commit_id, change.commit_id,
+        "the snapshot should have rewritten the change"
+    );
+    assert_eq!(repo.git_remote_branch_target(&branch)?, current.commit_id);
+    assert_eq!(repo.stored_pr(9)?["headRefName"], json!(branch));
+    Ok(())
+}
