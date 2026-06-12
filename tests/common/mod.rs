@@ -259,6 +259,13 @@ impl TestRepo {
         Ok(advanced)
     }
 
+    /// Make the bare remote reject every push via a real `pre-receive` hook,
+    /// the way a hung or protected remote would.
+    pub fn reject_remote_pushes(&self, message: &str) -> anyhow::Result<()> {
+        let hook = self.remote.join("hooks").join("pre-receive");
+        write_executable(&hook, &format!("#!/bin/sh\necho '{message}' >&2\nexit 1\n"))
+    }
+
     /// Advance the bare remote's trunk from a separate `git` clone, the way
     /// another machine or agent would. Unlike [`advance_remote_trunk`], the
     /// workspace never sees the push, so jj's `main@origin` tracking ref is

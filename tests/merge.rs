@@ -640,3 +640,31 @@ fn merge_surfaces_sync_guidance_when_remote_trunk_moved_externally() -> anyhow::
     assert_eq!(repo.stored_pr(9)?["state"], json!("OPEN"));
     Ok(())
 }
+
+#[test]
+fn merge_restores_trunk_bookmark_when_push_fails() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-push-fails-restore-trunk")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+    let main_before = repo.bookmark_target("main")?;
+
+    repo.reject_remote_pushes("push rejected by test hook")?;
+    let output = repo.run(&["merge", "--admin"])?;
+    assert!(
+        !output.status.success(),
+        "merge must fail when the trunk push is rejected"
+    );
+
+    // The local trunk bookmark was rolled back, not left stranded on the
+    // stack top where every later sync trunk-move would refuse to touch it.
+    assert_eq!(
+        repo.bookmark_target("main")?,
+        main_before,
+        "failed merge push must not leave trunk on the unmerged stack"
+    );
+    assert_eq!(repo.stored_pr(9)?["state"], json!("OPEN"));
+    Ok(())
+}

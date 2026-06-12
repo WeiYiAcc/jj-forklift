@@ -557,6 +557,8 @@ pub(crate) fn fast_forward_trunk_over_stack(
     // here (with a warning) instead of bailing.
     ensure_trunk_tracked(runner, config, diagnostics)?;
 
+    let previous_trunk = git_rev_parse(runner, &config.trunk)?;
+
     let set_args = ["bookmark", "set", config.trunk.as_str(), "-r", top_commit];
     diagnostics.command("jj", &set_args);
     let set = runner.run("jj", &set_args)?;
@@ -579,6 +581,27 @@ pub(crate) fn fast_forward_trunk_over_stack(
     diagnostics.command("jj", &push_args);
     let push = runner.run("jj", &push_args)?;
     if !push.success {
+        // The bookmark already moved to the stack top; leaving it there after
+        // a failed push strands local trunk on unmerged commits, a diverged
+        // state every later sync trunk-move refuses to touch. Restore it
+        // (best-effort — the push failure is the error worth reporting).
+        let restore_args = [
+            "bookmark",
+            "set",
+            "--allow-backwards",
+            config.trunk.as_str(),
+            "-r",
+            previous_trunk.as_str(),
+        ];
+        diagnostics.command("jj", &restore_args);
+        match runner.run("jj", &restore_args) {
+            Ok(restore) if restore.success => {}
+            _ => ui_warn!(
+                "failed to restore trunk `{}` to {} after the failed push",
+                config.trunk,
+                short_commit_id(&previous_trunk)
+            ),
+        }
         bail!(
             "failed-command=`{}` error={}",
             display_command("jj", &push_args),
