@@ -19,10 +19,15 @@ pub(crate) fn run(
     // The pre-submit fetch fast-forwards the local trunk bookmark whenever
     // upstream moved, stranding the stack root behind the new trunk — a state
     // submit base validation rejects. Instead of failing and demanding a manual
-    // `forklift sync`, perform sync's trunk-move + rebase here and carry on.
+    // `forklift sync`, offer to perform sync's trunk-move + rebase here
+    // (confirmed interactively unless `--yes`) and carry on.
     if stack_behind_trunk(runner, config, &context)
         .map_err(|error| phase_error("validate-submit-bases", "stack", error))?
     {
+        // A dry run only plans the rebase, so there is nothing to confirm.
+        if !dry_run {
+            confirm_sync_before_submit(&config.trunk, options.yes)?;
+        }
         diagnostics.phase("move-trunk");
         move_trunk_to_remote(runner, config, diagnostics)
             .map_err(|error| phase_error("move-trunk", &config.trunk, error))?;

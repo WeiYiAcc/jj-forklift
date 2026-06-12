@@ -661,3 +661,93 @@ fn submit_dry_run_plans_rebase_when_trunk_moved() -> anyhow::Result<()> {
     assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
     Ok(())
 }
+
+#[test]
+fn submit_prompts_to_sync_when_trunk_moved() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-trunk-moved-prompt-yes")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+    repo.set_bookmark("main", &advanced.commit_id)?;
+
+    // First "y" accepts the sync, the second applies the submit plan.
+    let output = repo.run_tty_with_stdin(&["submit"], "y\ny\n")?;
+    assert_success("submit", &output);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("sync before submit? [y/N]"),
+        "submit should ask before syncing\nstdout:\n{stdout}"
+    );
+
+    // Accepting rebased the stack onto the new trunk and pushed the result.
+    let rebased = repo.change_at(&change.change_id)?;
+    let parent = repo.rev_commit_id(&format!("{}-", rebased.commit_id))?;
+    assert_eq!(parent, advanced.commit_id, "stack should sit on the new trunk");
+    assert_eq!(repo.git_remote_branch_target(&branch)?, rebased.commit_id);
+    let pr = repo.stored_pr(9)?;
+    assert_eq!(pr["headRefName"], json!(branch));
+    Ok(())
+}
+
+#[test]
+fn submit_declined_sync_changes_nothing() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-trunk-moved-prompt-no")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+    repo.set_bookmark("main", &advanced.commit_id)?;
+
+    let output = repo.run_tty_with_stdin(&["submit"], "n\n")?;
+    assert!(
+        !output.status.success(),
+        "declined sync must cancel the submit\nstdout:\n{}\nstderr:\n{}",
+        stdout_of(&output),
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("submit cancelled"),
+        "decline should cancel cleanly\nstdout:\n{stdout}"
+    );
+
+    // Declining mutated nothing: no rebase, no push, no PR.
+    let unchanged = repo.change_at(&change.change_id)?;
+    assert_eq!(unchanged.commit_id, change.commit_id);
+    assert!(!repo.remote_branch_exists(&branch)?);
+    assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}
+
+#[test]
+fn submit_behind_trunk_requires_yes_when_not_a_terminal() -> anyhow::Result<()> {
+    let repo = TestRepo::new("submit-trunk-moved-non-tty")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    let advanced = repo.advance_remote_trunk("remote work", &change.change_id)?;
+    repo.set_bookmark("main", &advanced.commit_id)?;
+
+    let output = repo.run(&["submit"])?;
+    assert!(
+        !output.status.success(),
+        "non-interactive submit of a stale stack must fail\nstdout:\n{}\nstderr:\n{}",
+        stdout_of(&output),
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("submit requires the stack to be synced"),
+        "stderr:\n{stderr}"
+    );
+
+    let unchanged = repo.change_at(&change.change_id)?;
+    assert_eq!(unchanged.commit_id, change.commit_id);
+    assert!(!repo.remote_branch_exists(&branch)?);
+    assert!(!repo.gh_request_matches(&["api", "-X", "POST", "repos/owner/repo/pulls"])?);
+    Ok(())
+}

@@ -1044,6 +1044,45 @@ pub(crate) fn stack_behind_trunk(
     Ok(merge_base(runner, &root.commit_id, &trunk_tip)? != trunk_tip)
 }
 
+/// Ask before submit performs sync's trunk-move + rebase on a stack that fell
+/// behind trunk. Runs before anything is mutated, so declining leaves the repo
+/// untouched. `--yes` accepts without prompting.
+pub(crate) fn confirm_sync_before_submit(trunk: &str, yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(CliError::new("submit requires the stack to be synced")
+            .reason(format!(
+                "the stack is behind trunk `{trunk}` and stdin is not a terminal"
+            ))
+            .resolution(
+                "run `forklift sync`, or rerun with `forklift submit --yes` to sync and submit",
+            )
+            .into());
+    }
+
+    eprint!("Stack is behind trunk `{trunk}` — sync before submit? [y/N] ");
+    io::stderr()
+        .flush()
+        .context("flush sync-before-submit prompt")?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("read sync-before-submit confirmation")?;
+    if matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes") {
+        return Ok(());
+    }
+
+    Err(CliError::new("submit cancelled")
+        .reason(format!(
+            "the stack must be rebased onto trunk `{trunk}` before it can be submitted"
+        ))
+        .resolution("run `forklift sync`, then rerun `forklift submit`")
+        .into())
+}
+
 pub(crate) fn validate_submit_bases(
     runner: &impl CommandRunner,
     config: &AppConfig,
