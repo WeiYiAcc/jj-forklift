@@ -670,6 +670,41 @@ pub(crate) fn push_bookmark_deletions(
     Ok(())
 }
 
+/// List every resolvable local bookmark name, regardless of prefix or target.
+pub(crate) fn local_bookmark_names(runner: &impl CommandRunner) -> Result<Vec<String>> {
+    let args = ["bookmark", "list", "-T", LOCAL_BOOKMARK_TEMPLATE];
+    let output = runner.run("jj", &args)?;
+    if !output.success {
+        bail!(
+            "failed-command=`{}` error={}",
+            display_command("jj", &args),
+            output.stderr.trim()
+        );
+    }
+
+    let mut bookmarks = output
+        .stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?.trim();
+            let remote = fields.next().unwrap_or_default().trim();
+            let status = fields.next().unwrap_or_default().trim();
+            let target = fields.next().unwrap_or_default().trim();
+            if !remote.is_empty()
+                || status == "conflicted"
+                || !is_resolvable_bookmark_target(target)
+            {
+                return None;
+            }
+            Some(name.to_owned())
+        })
+        .collect::<Vec<_>>();
+    bookmarks.sort();
+    bookmarks.dedup();
+    Ok(bookmarks)
+}
+
 /// List local stack bookmarks (those under the configured branch prefix that
 /// have no remote-only counterpart), regardless of which revision they point at.
 pub(crate) fn local_stack_bookmarks(

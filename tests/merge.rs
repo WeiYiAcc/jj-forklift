@@ -668,3 +668,31 @@ fn merge_restores_trunk_bookmark_when_push_fails() -> anyhow::Result<()> {
     assert_eq!(repo.stored_pr(9)?["state"], json!("OPEN"));
     Ok(())
 }
+
+#[test]
+fn merge_recovers_trunk_stranded_by_earlier_failed_push() -> anyhow::Result<()> {
+    let repo = TestRepo::new("merge-stranded-trunk-recovery")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+
+    // The stranded state an old merge left behind: its push was rejected
+    // after `bookmark set` had already moved trunk onto the stack top, and
+    // another clone has advanced the remote since.
+    repo.jj(&["bookmark", "set", "main", "-r", &change.commit_id])?;
+    let external = repo.advance_remote_trunk_externally("external work")?;
+
+    // Merge offers the sync+submit recovery; accepting must carry all the way
+    // through (recover trunk, rebase, resubmit, merge) without manual repair.
+    let output = repo.run_tty_with_stdin(&["merge", "--admin"], "y\n")?;
+    assert_success("merge --admin from stranded trunk", &output);
+
+    let rebased = repo.change_at(&change.change_id)?;
+    let parent = repo.rev_commit_id(&format!("{}-", rebased.commit_id))?;
+    assert_eq!(parent, external, "stack should be rebased onto the external commit");
+    assert_eq!(repo.git_remote_branch_target("main")?, rebased.commit_id);
+    assert_eq!(repo.stored_pr(9)?["state"], json!("MERGED"));
+    Ok(())
+}

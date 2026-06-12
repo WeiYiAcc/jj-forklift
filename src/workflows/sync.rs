@@ -617,25 +617,73 @@ pub(crate) fn move_trunk_to_remote(
         return Ok(());
     }
 
-    ensure_trunk_can_fast_forward(runner, config, &local, &remote)?;
+    let stranded_recovery = if trunk_can_fast_forward(runner, &local, &remote)? {
+        false
+    } else {
+        // A merge push that failed after moving the trunk bookmark (e.g. the
+        // remote rejected it) leaves local trunk sitting on stack commits the
+        // remote never received. If every commit trunk would abandon is still
+        // covered by another bookmark, moving trunk back to the remote loses
+        // nothing — the covered commits are the stack and get rebased right
+        // after. Anything uncovered is genuine divergence and still fails.
+        // The cover set must be built from bookmark *names* — `bookmarks() ~
+        // bookmarks(exact:<trunk>)` is a commit-set difference, and the stack
+        // top carries both trunk and its stack bookmark, so it would drop out.
+        let covers = local_bookmark_names(runner)?
+            .into_iter()
+            .filter(|name| name != &config.trunk)
+            .map(|name| format!("bookmarks(exact:\"{name}\")"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let uncovered_revset = if covers.is_empty() {
+            format!("::{local} ~ ::{remote}")
+        } else {
+            format!("::{local} ~ ::{remote} ~ ::({covers})")
+        };
+        let uncovered = list_commit_ids(runner, &uncovered_revset)?;
+        if !uncovered.is_empty() {
+            bail!(CliError::new(format!(
+                "trunk `{}` cannot fast-forward to `{}`: local commit {}, remote commit {}",
+                config.trunk,
+                remote_git_ref,
+                short_commit_id(&local),
+                short_commit_id(&remote)
+            )));
+        }
+        true
+    };
+
     let remote_jj_ref = remote_jj_ref(config);
-    let args = [
-        "bookmark",
-        "set",
-        config.trunk.as_str(),
-        "-r",
-        remote_jj_ref.as_str(),
-    ];
+    let mut args = vec!["bookmark", "set", config.trunk.as_str()];
+    if stranded_recovery {
+        args.push("--allow-backwards");
+    }
+    args.extend(["-r", remote_jj_ref.as_str()]);
 
     if diagnostics.dry_run {
-        diagnostics.plan_line(&format!(
-            "- fast-forward trunk `{}` from {} to {}",
-            config.trunk, local, remote
-        ));
+        if stranded_recovery {
+            diagnostics.plan_line(&format!(
+                "- move trunk `{}` back from {} to {} (every stranded commit keeps its own bookmark)",
+                config.trunk, local, remote
+            ));
+        } else {
+            diagnostics.plan_line(&format!(
+                "- fast-forward trunk `{}` from {} to {}",
+                config.trunk, local, remote
+            ));
+        }
         diagnostics.plan_line(&format!("- {}", display_command("jj", &args)));
         return Ok(());
     }
 
+    if stranded_recovery {
+        ui_warn!(
+            "local trunk `{}` sits on {} which the remote never received (likely an interrupted merge push); moving it back to {} — every stranded commit keeps its own bookmark",
+            config.trunk,
+            short_commit_id(&local),
+            short_commit_id(&remote)
+        );
+    }
     diagnostics.command("jj", &args);
     let output = runner.run("jj", &args)?;
     if !output.success {
@@ -650,24 +698,11 @@ pub(crate) fn move_trunk_to_remote(
 }
 
 #[tracing::instrument(skip_all, fields(local = %local, remote = %remote))]
-pub(crate) fn ensure_trunk_can_fast_forward(
+pub(crate) fn trunk_can_fast_forward(
     runner: &impl CommandRunner,
-    config: &AppConfig,
     local: &str,
     remote: &str,
-) -> Result<()> {
-    let remote_ref = remote_git_ref(config);
+) -> Result<bool> {
     let args = ["merge-base", "--is-ancestor", local, remote];
-    let output = git_run(runner, &args)?;
-    if !output.success {
-        bail!(CliError::new(format!(
-            "trunk `{}` cannot fast-forward to `{}`: local commit {}, remote commit {}",
-            config.trunk,
-            remote_ref,
-            short_commit_id(local),
-            short_commit_id(remote)
-        )));
-    }
-
-    Ok(())
+    Ok(git_run(runner, &args)?.success)
 }

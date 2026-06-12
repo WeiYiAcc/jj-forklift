@@ -387,3 +387,33 @@ fn sync_from_secondary_workspace_succeeds() -> anyhow::Result<()> {
     assert_success("sync from secondary workspace", &output);
     Ok(())
 }
+
+#[test]
+fn sync_recovers_trunk_stranded_on_stack_by_failed_merge_push() -> anyhow::Result<()> {
+    let repo = TestRepo::new("sync-stranded-trunk")?;
+    repo.init_main()?;
+    let change = repo.create_change("change", "change title", "change body")?;
+    let branch = branch_for("change-title", &change.change_id);
+    repo.seed_pr_number(&branch, 9)?;
+    assert_success("submit", &repo.run(&["submit", "--yes"])?);
+
+    // Replicate a merge whose push failed after moving the bookmark: local
+    // trunk left on the stack top while another clone advanced the remote.
+    repo.jj(&["bookmark", "set", "main", "-r", &change.commit_id])?;
+    let external = repo.advance_remote_trunk_externally("external work")?;
+
+    let output = repo.run(&["sync"])?;
+    assert_success("sync", &output);
+
+    // Trunk adopted the remote tip and the stack was rebased onto it; the
+    // stranded commit was covered by its stack bookmark, so nothing was lost.
+    assert_eq!(repo.bookmark_target("main")?, external);
+    let rebased = repo.change_at(&change.change_id)?;
+    assert_ne!(
+        rebased.commit_id, change.commit_id,
+        "sync should rebase the stack onto the recovered trunk"
+    );
+    let parent = repo.rev_commit_id(&format!("{}-", rebased.commit_id))?;
+    assert_eq!(parent, external, "stack should sit on the external commit");
+    Ok(())
+}
